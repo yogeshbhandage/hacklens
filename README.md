@@ -378,9 +378,10 @@ HackLens/
 Pull requests welcome. Planned features:
 - DOM-based XSS detection
 - SSRF detection
-- CORS misconfiguration checks
 - Stored XSS indicators
-- Rate limiting / WAF evasion
+- WAF evasion
+- Command Injection
+- SQL Injection
 
 ---
 
