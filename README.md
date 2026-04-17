@@ -18,7 +18,7 @@
 </p>
 
 <p align="center">
-  Created by <a href="https://yogeshbhandage.com"><b>Yogesh Bhandage</b></a>
+  Created by <a href="https://www.linkedin.com/in/yogesh-bhandage/"><b>Yogesh Bhandage</b></a>
   &nbsp;|&nbsp;
   <a href="https://yogeshbhandage.com">yogeshbhandage.com</a>
 </p>
