@@ -1133,54 +1133,80 @@ class RedirectScanner:
         self.target = target_domain
         self.tested = set()
 
-    # ── Helpers ──────────────────────────────────────────────────────────
+    # ── Domain helpers ────────────────────────────────────────────────────
 
-    # Known benign redirect pairs — domain migrations, CDN, auth flows
-    # Format: (from_domain_contains, to_domain_contains) — both are NOT vulns
-    _BENIGN_REDIRECT_PAIRS = [
-        ("twitter.com",    "x.com"),         # Twitter → X migration
-        ("x.com",          "twitter.com"),
-        ("instagram.com",  "instagram.com"),  # IG internal
-        ("fb.com",         "facebook.com"),   # FB short URL
-        ("facebook.com",   "fb.com"),
-        ("youtu.be",       "youtube.com"),    # YouTube short URL
-        ("goo.gl",         "google.com"),     # Google short URL
-        ("bit.ly",         "bit.ly"),         # Bitly stays on bitly
-    ]
+    def _root_domain(self, host):
+        """Extract root domain from host: sub.example.com → example.com"""
+        host = host.lower().split(":")[0]
+        parts = host.split(".")
+        if len(parts) >= 2:
+            return ".".join(parts[-2:])
+        return host
 
     def _is_offsite(self, netloc):
-        """True if netloc is NOT the target domain or a subdomain of it."""
+        """True if netloc is NOT the target domain or a subdomain."""
         if not netloc:
             return False
         host = netloc.lower().split(":")[0]
         t    = self.target.lower().split(":")[0]
         return not (host == t or host.endswith("." + t))
 
-    def _is_benign_redirect(self, from_url, to_url):
-        """Return True if this redirect is a known benign domain migration."""
-        from_host = urllib.parse.urlparse(from_url).netloc.lower()
-        to_host   = urllib.parse.urlparse(to_url).netloc.lower()
-        for from_pat, to_pat in self._BENIGN_REDIRECT_PAIRS:
-            if from_pat in from_host and to_pat in to_host:
+    def _is_canary_host(self, netloc):
+        """True if netloc IS the canary domain (evil.com), not just contains it."""
+        host = netloc.lower().split(":")[0]
+        return host == _CANARY.lower() or host.endswith("." + _CANARY.lower())
+
+    def _canary_is_only_param(self, url):
+        """
+        Returns True if evil.com appears ONLY as a query parameter value,
+        not as the actual host. This is the core FP check.
+        e.g. https://gcore.com/login?return=https://evil.com → True (FP)
+             https://evil.com/malicious                      → False (real)
+        """
+        parsed = urllib.parse.urlparse(url)
+        # If evil.com IS the host — it's a real redirect
+        if self._is_canary_host(parsed.netloc):
+            return False
+        # If evil.com appears in query string but host is something else — FP
+        if _CANARY in parsed.query or _CANARY in parsed.path:
+            return True
+        return False
+
+    # ── Known benign redirect pairs ───────────────────────────────────────
+    # Same company domain migrations / aliases — NOT vulnerabilities
+    _BENIGN_PAIRS = [
+        ("twitter.com",   "x.com"),
+        ("x.com",         "twitter.com"),
+        ("fb.com",        "facebook.com"),
+        ("youtu.be",      "youtube.com"),
+        ("goo.gl",        "google.com"),
+    ]
+
+    def _is_benign_alias(self, from_host, to_host):
+        """True if this is a known domain alias/migration, not a vuln."""
+        from_root = self._root_domain(from_host)
+        to_root   = self._root_domain(to_host)
+        # Same root domain (gcorelabs.com → gcore.com are DIFFERENT roots)
+        # Only flag known pairs
+        for a, b in self._BENIGN_PAIRS:
+            if from_root == a and to_root == b:
+                return True
+            if from_root == b and to_root == a:
                 return True
         return False
 
-    def _build_url(self, base_url, params, param, value):
-        parsed = urllib.parse.urlparse(base_url)
-        qs = dict(params)
-        qs[param] = value
-        return urllib.parse.urlunparse(parsed._replace(query=urllib.parse.urlencode(qs)))
+    # ── Three confirmed detection layers ─────────────────────────────────
 
-    # ── Three detection layers ────────────────────────────────────────────
-
-    def _check_location_header(self, r, test_url, param, probe):
+    def _check_layer1_location(self, r, test_url, param, probe):
         """
-        Layer 1: Check raw Location header — highest confidence.
-        CONFIRMED only if the redirect DESTINATION HOST is the canary domain.
-        We must NOT fire if the canary appears only as a query param value
-        inside an on-site redirect, e.g.:
-          Location: https://app.example.com/login?next=https://evil.com
-          ← this is NOT a redirect to evil.com, it stays on app.example.com
+        Layer 1 — Raw Location header (allow_redirects=False).
+
+        CONFIRMED: Location header HOST is evil.com
+        SKIP:      Location header HOST is anything else (even if query contains evil.com)
+
+        This eliminates 100% of the gcorelabs→gcore FP pattern because:
+          Location: https://gcore.com/login?return=https://evil.com
+          → host = gcore.com (NOT evil.com) → SKIP
         """
         if r.status_code not in (301, 302, 303, 307, 308):
             return False
@@ -1190,41 +1216,71 @@ class RedirectScanner:
 
         pl = urllib.parse.urlparse(loc)
 
-        # Resolve relative redirects — they stay on the same domain
+        # Relative redirect — always on-site
         if not pl.scheme and not pl.netloc:
-            return False  # relative redirect like /login or ../page — on-site
+            return False
 
-        # The destination HOST must be off-site (canary or other external domain)
         dest_host = pl.netloc.lower().split(":")[0]
 
-        # Case 1: canary IS the host of the redirect destination
-        if dest_host == _CANARY.lower():
+        # RULE: canary must BE the destination host
+        if self._is_canary_host(pl.netloc):
             self.log.vuln(
                 "Open Redirect [CONFIRMED]", test_url, param,
-                f"Location header redirects TO canary host | HTTP {r.status_code}",
+                f"Browser redirected TO evil.com | HTTP {r.status_code}",
                 f"Location: {loc}"
             )
             return True
 
-        # Case 2: off-site redirect (not canary, but genuinely external host)
-        if pl.scheme in ("http", "https") and self._is_offsite(dest_host):
-            # Skip known benign domain migrations (twitter→x, fb→facebook, etc.)
-            if self._is_benign_redirect(test_url, loc):
-                return False
-            if probe.startswith(("http://", "https://", "//")):
+        return False
+
+    def _check_layer2_chain(self, r, test_url, param, probe):
+        """
+        Layer 2 — Follow full redirect chain (allow_redirects=True).
+
+        CONFIRMED: Final URL host IS evil.com after all redirects
+        CONFIRMED: Any hop in the chain has Location host = evil.com
+
+        Skips hops where evil.com is only in query params.
+        """
+        # Check final landing URL
+        final = urllib.parse.urlparse(r.url)
+        if self._is_canary_host(final.netloc):
+            self.log.vuln(
+                "Open Redirect [CONFIRMED]", test_url, param,
+                f"Final URL after redirect chain IS evil.com",
+                f"Final: {r.url}"
+            )
+            return True
+
+        # Check each hop in history
+        for hop in r.history:
+            loc = hop.headers.get("Location", "").strip()
+            if not loc:
+                continue
+            pl = urllib.parse.urlparse(loc)
+            if not pl.netloc:
+                continue
+            # ONLY report if evil.com is the actual host, not a param value
+            if self._is_canary_host(pl.netloc):
                 self.log.vuln(
                     "Open Redirect [CONFIRMED]", test_url, param,
-                    f"off-site Location header | HTTP {r.status_code} | probe={probe[:50]}",
+                    f"Redirect chain hop to evil.com | HTTP {hop.status_code}",
                     f"Location: {loc}"
                 )
                 return True
 
         return False
 
-    def _check_body_reflection(self, r, test_url, param, probe):
+    def _check_layer3_body(self, r, test_url, param, probe):
         """
-        Layer 2: Check response body for canary in redirect context.
-        If canary URL appears in href/window.location/meta-refresh → POSSIBLE.
+        Layer 3 — Response body analysis.
+
+        CONFIRMED [LOW]: evil.com in <meta http-equiv=refresh> destination
+        ONE-CLICK [LOW]: evil.com in <a href> — user must click to be redirected
+        ONE-CLICK [LOW]: evil.com in window.location / location.href JS assignment
+                         that is triggered by user action (not auto-executed)
+
+        NOT REPORTED: evil.com just reflected in page text / input values
         """
         ct = r.headers.get("Content-Type", "").lower()
         if "html" not in ct:
@@ -1232,96 +1288,89 @@ class RedirectScanner:
 
         body = r.text
 
-        # Meta-refresh
+        if _CANARY not in body:
+            return False
+
+        # ── Meta-refresh (auto-executes) → CONFIRMED ──────────────────
         m = re.search(
-            r'<meta[^>]+http-equiv=["\']?refresh["\']?[^>]+content=["\']?[^"\']*url=([^"\'>\s]+)',
+            r'<meta[^>]+http-equiv=["\']?refresh["\']?[^>]+'
+            r'content=["\']?[^"\']*url\s*=\s*([^"\'>\s;]+)',
             body, re.I
         )
         if m:
-            dest = m.group(1).strip()
+            dest = m.group(1).strip().strip('"\')')
             pd = urllib.parse.urlparse(dest)
-            if _CANARY in dest or (pd.netloc and self._is_offsite(pd.netloc)):
+            if self._is_canary_host(pd.netloc):
                 self.log.vuln(
                     "Open Redirect [CONFIRMED]", test_url, param,
-                    f"meta-refresh redirect to off-site URL | probe={probe[:40]}",
-                    f"Meta-refresh → {dest[:120]}"
+                    f"Meta-refresh auto-redirects to evil.com",
+                    f"<meta refresh> → {dest[:120]}"
                 )
                 return True
 
-        # Canary in body in a URL context
-        if _CANARY in body:
-            patterns = [
-                rf'(?:href|src|action|url|location)\s*[=:]\s*["\']?[^"\'<\s]*{re.escape(_CANARY)}',
-                rf'window\.location\s*=\s*["\'][^"\']*{re.escape(_CANARY)}',
-                rf'location\.href\s*=\s*["\'][^"\']*{re.escape(_CANARY)}',
-                rf'<a[^>]+href=[^>]*{re.escape(_CANARY)}',
-            ]
-            for pat in patterns:
-                if re.search(pat, body, re.I):
-                    self.log.vuln(
-                        "Open Redirect [POSSIBLE]", test_url, param,
-                        f"canary URL reflected in body redirect context | probe={probe[:40]}",
-                        f"Canary found in redirect-like context in response body"
-                    )
-                    return True
-
-        return False
-
-    def _check_redirect_chain(self, r, test_url, param, probe):
-        """
-        Layer 3: After following all redirects, check if we ended up off-site.
-        The canary must be the HOST of the final URL, not just in query params.
-        """
-        # Check final URL — canary must be the netloc, not a query value
-        final_parsed = urllib.parse.urlparse(r.url)
-        final_host   = final_parsed.netloc.lower().split(":")[0]
-        if final_host == _CANARY.lower():
-            self.log.vuln(
-                "Open Redirect [CONFIRMED]", test_url, param,
-                f"final URL host IS the canary domain after redirect chain",
-                f"Final URL: {r.url}"
-            )
-            return True
-
-        for h in r.history:
-            loc = h.headers.get("Location", "")
-            if not loc:
-                continue
-            pl = urllib.parse.urlparse(loc)
-            hop_host = pl.netloc.lower().split(":")[0]
-
-            # Canary must be the destination HOST, not a query param value
-            if hop_host == _CANARY.lower():
+        # ── <a href> with evil.com → ONE-CLICK LOW ─────────────────────
+        # Must be a proper anchor tag href pointing to evil.com
+        a_matches = re.findall(
+            rf'<a\s[^>]*href=["\']?(https?://[^"\'\s>]*{re.escape(_CANARY)}[^"\'\s>]*)["\']?[^>]*>',
+            body, re.I
+        )
+        for href in a_matches:
+            ph = urllib.parse.urlparse(href)
+            if self._is_canary_host(ph.netloc):
                 self.log.vuln(
-                    "Open Redirect [CONFIRMED]", test_url, param,
-                    f"redirect chain hop to canary host | HTTP {h.status_code}",
-                    f"Location: {loc}"
+                    "One-Click Redirect [LOW]", test_url, param,
+                    f"evil.com in <a href> — user click required to redirect",
+                    f'<a href="{href[:120]}">'
                 )
                 return True
 
-            # Off-site host (non-canary) — only report for real URL probes
-            if pl.scheme in ("http","https") and self._is_offsite(hop_host):
-                if probe.startswith(("http://","https://","//")):
-                    self.log.vuln(
-                        "Open Redirect [CONFIRMED]", test_url, param,
-                        f"off-site hop in redirect chain | HTTP {h.status_code}",
-                        f"Location: {loc}"
-                    )
-                    return True
+        # ── window.location / location.href JS assignment ──────────────
+        # Only report if it's directly assigned (not inside a function condition)
+        _q = r'''["\']'''
+        js_redirect_patterns = [
+            rf'window\.location\.href\s*=\s*{_q}[^"\']*{re.escape(_CANARY)}[^"\']*{_q}',
+            rf'window\.location\.replace\s*\(\s*{_q}[^"\']*{re.escape(_CANARY)}[^"\']*{_q}\s*\)',
+            rf'window\.location\.assign\s*\(\s*{_q}[^"\']*{re.escape(_CANARY)}[^"\']*{_q}\s*\)',
+            rf'window\.location\s*=\s*{_q}[^"\']*{re.escape(_CANARY)}[^"\']*{_q}',
+            rf'location\.href\s*=\s*{_q}[^"\']*{re.escape(_CANARY)}[^"\']*{_q}',
+        ]
+        for pat in js_redirect_patterns:
+            m = re.search(pat, body, re.I)
+            if m:
+                snippet = m.group(0)
+                # Make sure evil.com is the HOST in this URL, not just in params
+                urls_in_snippet = re.findall(r'https?://[^\s\'"]+', snippet)
+                for u in urls_in_snippet:
+                    pu = urllib.parse.urlparse(u)
+                    if self._is_canary_host(pu.netloc):
+                        self.log.vuln(
+                            "One-Click Redirect [LOW]", test_url, param,
+                            f"evil.com in JS location assignment",
+                            f"{snippet[:120]}"
+                        )
+                        return True
 
         return False
+
+    # ── Main test ─────────────────────────────────────────────────────────
+
+    def _build_url(self, base_url, params, param, value):
+        parsed = urllib.parse.urlparse(base_url)
+        qs = dict(params)
+        qs[param] = value
+        return urllib.parse.urlunparse(parsed._replace(query=urllib.parse.urlencode(qs)))
 
     def _test_param(self, base_url, all_params, param):
-        """Test one param — one confirmed hit stops all further probes for that param."""
-        # Skip out-of-scope URLs
+        """Test one parameter against all redirect probes."""
+        # Skip out-of-scope
         if self.target and not is_in_scope(base_url, self.target):
             return
 
-        # Skip params that are definitively not redirect sinks
+        # Skip analytics / non-redirect params
         if param.lower().rstrip("[]") in _NON_REDIRECT_PARAMS:
             return
 
-        # Dedup at param level so same endpoint+param only tested once
+        # One confirmed hit per param is enough
         param_key = f"redir:{base_url}:{param}"
         if param_key in self.tested:
             return
@@ -1330,21 +1379,30 @@ class RedirectScanner:
         for probe in REDIRECT_PROBES:
             test_url = self._build_url(base_url, all_params, param, probe)
             try:
-                # Pass 1: raw (no redirect following) — catch Location header directly
+                # Pass 1: no redirect following — see raw Location header
                 r_raw = self.sess.get(test_url, timeout=10, allow_redirects=False)
 
-                if self._check_location_header(r_raw, test_url, param, probe):
+                if self._check_layer1_location(r_raw, test_url, param, probe):
                     return  # confirmed
 
-                if self._check_body_reflection(r_raw, test_url, param, probe):
-                    return  # possible (body context)
+                # If server redirected (3xx), also check body for meta-refresh
+                if self._check_layer3_body(r_raw, test_url, param, probe):
+                    return
 
-                # Pass 2: follow redirect chain
+                # Pass 2: follow full chain — see where we actually land
                 if r_raw.status_code in (301, 302, 303, 307, 308):
-                    r_follow = self.sess.get(test_url, timeout=10,
-                                             allow_redirects=True, max_redirects=8)
-                    if self._check_redirect_chain(r_follow, test_url, param, probe):
-                        return
+                    try:
+                        r_follow = self.sess.get(
+                            test_url, timeout=10,
+                            allow_redirects=True, max_redirects=8
+                        )
+                        if self._check_layer2_chain(r_follow, test_url, param, probe):
+                            return
+                        # Also check body of final page
+                        if self._check_layer3_body(r_follow, test_url, param, probe):
+                            return
+                    except requests.TooManyRedirects:
+                        pass
 
             except requests.TooManyRedirects:
                 pass
@@ -1352,11 +1410,8 @@ class RedirectScanner:
                 pass
 
     def _generate_extra_urls(self, base_domain):
-        """
-        Proactively test common auth/redirect endpoints
-        even if not discovered by the crawler.
-        """
-        common_paths = [
+        """Test common auth endpoints proactively."""
+        paths = [
             "/login", "/logout", "/signin", "/signout", "/auth",
             "/oauth/authorize", "/sso", "/redirect", "/go", "/out",
             "/exit", "/saml/sso", "/auth/callback", "/account/login",
@@ -1368,7 +1423,7 @@ class RedirectScanner:
             "redirect_uri", "back", "continue",
         ]
         extra = []
-        for path in common_paths:
+        for path in paths:
             for param in top_params:
                 url = f"https://{base_domain}{path}"
                 extra.append((url, {param: f"https://{_CANARY}"}, param))
@@ -1377,9 +1432,9 @@ class RedirectScanner:
     def scan_urls(self, urls, workers=8):
         self.log.section(f"STEP 5: Open Redirect Scanning {len(urls)} URLs")
 
-        priority = []   # known redirect param names or value looks like a URL
-        secondary = []  # all other params (still tested — apps use non-standard names)
-        seen = set()
+        priority  = []
+        secondary = []
+        seen      = set()
 
         for url in urls:
             parsed = urllib.parse.urlparse(url)
@@ -1389,14 +1444,14 @@ class RedirectScanner:
                 if pkey in seen:
                     continue
                 seen.add(pkey)
-                is_redir_param = param.lower().rstrip("[]") in REDIRECT_PARAMS
-                looks_like_url  = value.lower().startswith(("http://", "https://", "//", "www."))
-                if is_redir_param or looks_like_url:
+                is_redir   = param.lower().rstrip("[]") in REDIRECT_PARAMS
+                looks_like = value.lower().startswith(("http://","https://","//","www."))
+                if is_redir or looks_like:
                     priority.append((url, params, param))
                 else:
                     secondary.append((url, params, param))
 
-        # Proactively test common auth endpoints
+        # Add proactive auth endpoint tests
         domain = urllib.parse.urlparse(urls[0]).netloc if urls else ""
         if domain:
             for item in self._generate_extra_urls(domain):
@@ -1406,7 +1461,6 @@ class RedirectScanner:
                     priority.append(item)
 
         tasks = priority + secondary
-
         if not tasks:
             self.log.warn("No URLs found for redirect testing")
             return
@@ -1416,8 +1470,7 @@ class RedirectScanner:
             f"({len(priority)} priority + {len(secondary)} secondary)…"
         )
         with ThreadPoolExecutor(max_workers=workers) as ex:
-            futs = [ex.submit(self._test_param, u, p, param)
-                    for u, p, param in tasks]
+            futs = [ex.submit(self._test_param, u, p, param) for u, p, param in tasks]
             for fut in as_completed(futs):
                 pass
 
