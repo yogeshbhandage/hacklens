@@ -293,6 +293,7 @@ HackLens/
   hacklens.py         ← main scanner
   install.sh          ← installer
   run.sh              ← launcher (auto-created)
+  update.sh           ← Update the tool
   requirements.txt    ← Python deps
   README.md
   TECHNICAL_DOCS.md
