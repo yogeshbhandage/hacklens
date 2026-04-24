@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 ╔══════════════════════════════════════════════════════════════╗
-║          HACKLENS - Web Recon & Vulnerability Scanner        ║
+║       HACKLENS v2.0 - Web Recon & Vulnerability Scanner      ║
 ║       JS Secrets  |  Reflected XSS  |  Open Redirect        ║
 ║                                                              ║
 ║  Created by  : Yogesh Bhandage                               ║
@@ -21,6 +21,8 @@ import subprocess
 import urllib.parse
 import tempfile
 import hashlib
+import shutil
+import gc
 from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
@@ -179,7 +181,10 @@ SECRET_PATTERNS = {
     "Docker Hub Token":       r'(?i)["\']docker[_\-]?(?:token|password)["\']\s*[:=]\s*["\']([A-Za-z0-9\-_]{20,})["\']',
 
     # ── Social / SaaS ──────────────────────────────────────────────────
-    "Twitter Bearer":         r'AAAAAAAAAAAAAAAAAAAAAA[A-Za-z0-9%]{30,}',
+    # Twitter Bearer: must be in a quoted string context.
+    # Raw base64 image data (PNG/ICC profiles) contains long runs of A's
+    # which matched the old pattern. Require quote boundary on left.
+    "Twitter Bearer":         r'(?<=["\'\`\s])AAAAAAAAAAAAAAAAAAAAAA[A-Za-z0-9%]{30,}(?=["\'\`\s]|$)',
     "Facebook Token":         r'EAACEdEose0cBA[0-9A-Za-z]+',
     "Mapbox Token":           r'pk\.eyJ1[A-Za-z0-9\-_\.]{10,}',
     "Shopify Token":          r'shpat_[a-fA-F0-9]{32}',
@@ -584,6 +589,19 @@ _VERSION_RE = re.compile(r'^\d+\.\d+[\.\d\-a-z]*$', re.IGNORECASE)
 def is_false_positive(value, pattern_name):
     v = value.strip()
 
+    # 0. Skip anything that came from a data: URI (base64 image/font data)
+    # These contain random binary-looking sequences that match many patterns
+    if re.search(r'^data:[a-z/+]+;base64,', v, re.I):
+        return True
+    # Skip if value itself looks like raw base64 (long alphanum, no spaces, >80 chars)
+    # that doesn't match any specific known format
+    if len(v) > 80 and re.match(r'^[A-Za-z0-9+/=]{80,}$', v):
+        if pattern_name not in (
+            "AWS Secret Key", "Azure Storage Key", "OpenAI Key (old)",
+            "OpenAI Key (proj)", "Anthropic Key", "Generic Private Key Val",
+        ):
+            return True
+
     # 1. Code reference
     if _CODE_RE.search(v):
         return True
@@ -687,22 +705,44 @@ class SecretScanner:
         self.scanned       = 0
         self.target_domain = target_domain
 
+    # Memory thresholds
+    MAX_BEAUTIFY_SIZE = 512 * 1024        # 512 KB — only beautify small JS
+                                          # jsbeautifier uses 10-50x input RAM
+    CHUNK_SIZE        = 2 * 1024 * 1024   # 2 MB chunks for large file scanning
+    # NO hard skip limit — large vendor bundles are prime secret targets
+
     def scan_content(self, content, source, content_type=""):
         if not content or len(content) < 30:
             return
 
-        ct = content_type.lower()
+        ct    = content_type.lower()
+        is_js = any(x in source.lower() for x in (".js", ".jsx", ".ts", ".tsx", ".mjs")) or "javascript" in ct or ".map" in source.lower()
+        size  = len(content)
 
-        # Beautify JS files for better scanning — skip for HTML/JSON/XML
-        if ".js" in source.lower() or "javascript" in ct:
+        if is_js and size <= self.MAX_BEAUTIFY_SIZE:
+            # Small JS — beautify for better line detection
             try:
                 text = jsbeautifier.beautify(content)
             except Exception:
                 text = content
-        else:
-            # HTML/JSON/XML/plain — scan as-is, no beautifier
-            text = content
+            self._scan_text(text, source)
+            del text
 
+        elif size > self.MAX_BEAUTIFY_SIZE:
+            # Large file (JS or otherwise) — scan in overlapping chunks
+            # so we never hold the full beautified version in RAM.
+            # Secrets in minified code are always in string literals —
+            # raw scanning catches them just as reliably.
+            self._scan_chunked(content, source)
+
+        else:
+            # Small non-JS — scan raw
+            self._scan_text(content, source)
+
+        self.scanned += 1
+
+    def _scan_text(self, text, source):
+        """Run all 162 patterns against a text string."""
         for pat_name, pattern in SECRET_PATTERNS.items():
             try:
                 for m in re.finditer(pattern, text, re.MULTILINE):
@@ -712,29 +752,94 @@ class SecretScanner:
                         self.log.finding(pat_name, val, source, line_num)
             except re.error:
                 pass
-        self.scanned += 1
+
+    def _scan_chunked(self, content, source):
+        """
+        Scan large files in overlapping 2MB chunks.
+        Overlap of 500 bytes ensures secrets spanning chunk boundaries
+        are never missed.
+        Uses a single chunk at a time in memory — O(chunk_size) RAM
+        regardless of total file size.
+        """
+        size    = len(content)
+        overlap = 500   # bytes — long enough to cover any single secret
+        offset  = 0
+        chunk_num = 0
+
+        while offset < size:
+            end   = min(offset + self.CHUNK_SIZE, size)
+            chunk = content[offset:end]
+
+            for pat_name, pattern in SECRET_PATTERNS.items():
+                try:
+                    for m in re.finditer(pattern, chunk, re.MULTILINE):
+                        val = m.group(0)
+                        # Approximate line number relative to start of file
+                        approx_line = content[:offset + m.start()].count('\n') + 1
+                        if not is_false_positive(val, pat_name):
+                            self.log.finding(pat_name, val, source, approx_line)
+                except re.error:
+                    pass
+
+            del chunk
+            chunk_num += 1
+            # Advance with overlap so secrets at boundaries aren't missed
+            offset = end - overlap if end < size else size
 
     def scan_url(self, url):
-        # Skip out-of-scope URLs — only scan target domain and its subdomains
+        # Skip out-of-scope URLs
         if self.target_domain and not is_in_scope(url, self.target_domain):
             return
         try:
-            r = self.session.get(url, timeout=15)
-            if r.status_code == 200 and len(r.text) > 50:
+            # HEAD request first — check content type before downloading
+            try:
+                head    = self.session.head(url, timeout=8, allow_redirects=True)
+                ct_head = head.headers.get("Content-Type", "").lower()
+                # Skip purely binary types — no secrets in images/fonts/archives
+                if any(x in ct_head for x in (
+                    "image/", "video/", "audio/", "font/",
+                    "application/zip", "application/pdf",
+                    "application/octet-stream",
+                )):
+                    return
+            except Exception:
+                pass  # HEAD failed — try GET anyway
+
+            r = self.session.get(url, timeout=20)
+            if r.status_code == 200 and len(r.content) > 50:
                 ct = r.headers.get("Content-Type", "")
                 self.scan_content(r.text, url, ct)
+                del r
+        except Exception:
+            pass
         except Exception:
             pass
 
+    BATCH_SIZE = 200   # Process URLs in batches to prevent memory buildup
+
     def scan_parallel(self, urls, workers=10):
-        self.log.section(f"STEP 3: Scanning {len(urls)} files for Secrets")
-        with ThreadPoolExecutor(max_workers=workers) as ex:
-            futs = {ex.submit(self.scan_url, u): u for u in urls}
-            done = 0
-            for fut in as_completed(futs):
-                done += 1
-                if done % 25 == 0:
-                    self.log.info(f"Progress: {done}/{len(urls)} scanned…")
+        total = len(urls)
+        self.log.section(f"STEP 3: Scanning {total} files for Secrets")
+
+        # Cap workers to prevent OOM — more workers = more simultaneous
+        # JS files loaded in RAM. 5 is a good balance of speed vs memory.
+        safe_workers = min(workers, 5)
+        if workers > safe_workers:
+            self.log.info(f"Workers capped at {safe_workers} (memory safety — use -w 5 to suppress)")
+
+        done = 0
+        # Process in batches — completed futures are GC'd between batches
+        for i in range(0, total, self.BATCH_SIZE):
+            batch = urls[i:i + self.BATCH_SIZE]
+            with ThreadPoolExecutor(max_workers=safe_workers) as ex:
+                futs = {ex.submit(self.scan_url, u): u for u in batch}
+                for fut in as_completed(futs):
+                    done += 1
+                    if done % 100 == 0:
+                        pct = int(done / total * 100)
+                        self.log.info(f"Progress: {done}/{total} ({pct}%) scanned…")
+            # Force GC between batches
+            gc.collect()
 
 # ─────────────────────────────────────────────
 #  REFLECTED XSS SCANNER
@@ -1495,26 +1600,62 @@ class EndpointExtractor:
         self.endpoints = set()
         self.all_urls  = set()
 
+    # Patterns that are never real API endpoints
+    _EP_SKIP_RE = re.compile(
+        r'^#'               # fragment anchors (#cart, #image0)
+        r'|^data:'          # data: URIs (data:image/png;base64,...)
+        r'|^javascript:'    # js: URIs
+        r'|^mailto:'        # mailto links
+        r'|^tel:'           # phone links
+        r'|\.(?:png|jpg|jpeg|gif|svg|ico|woff|woff2|ttf|eot|mp4|mp3|pdf|zip)(?:\?|$)'
+        , re.IGNORECASE
+    )
+
     def extract(self, content, source, base_url=""):
+        # Skip base64/data URIs in content entirely
+        content_clean = re.sub(r'data:[a-z/+]+;base64,[A-Za-z0-9+/=]+', '', content, flags=re.I)
+
         for pat in self.PATTERNS:
-            for m in re.finditer(pat, content, re.IGNORECASE):
+            for m in re.finditer(pat, content_clean, re.IGNORECASE):
                 ep = m.group(1).strip()
-                if len(ep) < 3 or any(c in ep for c in ('`', '{', '}')):
+
+                # Basic length + template literal check
+                if len(ep) < 4 or any(c in ep for c in ('`', '{', '}')):
                     continue
+
+                # Skip fragments, data URIs, media files
+                if self._EP_SKIP_RE.search(ep):
+                    continue
+
+                # Skip SVG-style IDs (#image0, #image0_1305_3534)
+                if re.match(r'#[a-z]+\d', ep, re.I):
+                    continue
+
+                # Make absolute URL if relative
                 if ep.startswith("/") and base_url:
                     p = urllib.parse.urlparse(base_url)
                     ep = f"{p.scheme}://{p.netloc}{ep}"
+
+                # Skip if it looks like a base64 blob
+                if len(ep) > 100 and re.match(r'[A-Za-z0-9+/=]{80,}', ep):
+                    continue
+
                 self.endpoints.add(ep)
                 if ep.startswith("http") and "?" in ep:
                     self.all_urls.add(ep)
 
     def print_summary(self):
-        if self.endpoints:
-            self.log.section("EXTRACTED ENDPOINTS")
-            for ep in sorted(self.endpoints)[:80]:
+        # Final filter: only show meaningful endpoints (paths + full URLs)
+        meaningful = sorted(
+            ep for ep in self.endpoints
+            if (ep.startswith("/") or ep.startswith("http")) and len(ep) > 4
+        )
+        if meaningful:
+            self.log.section(f"EXTRACTED ENDPOINTS ({len(meaningful)})")
+            for ep in meaningful[:100]:
                 print(f"  {C}→{RESET} {ep}")
-            if len(self.endpoints) > 80:
-                print(f"  {DIM}… and {len(self.endpoints)-80} more{RESET}")
+            if len(meaningful) > 100:
+                print(f"  {DIM}… and {len(meaningful)-100} more (all saved to endpoints.txt){RESET}")
 
 # ─────────────────────────────────────────────
 #  JS COLLECTOR
@@ -1544,7 +1685,10 @@ class JSCollector:
         for tag in soup.find_all("script", src=True):
             full = urllib.parse.urljoin(url, tag["src"])
             if self.domain in full:
-                self.js_urls.add(full)
+                # Collect JS, TS, JSX, TSX, MJS, source maps
+                if any(ext in full.lower() for ext in
+                       ('.js', '.jsx', '.ts', '.tsx', '.mjs', '.cjs', '.js.map')):
+                    self.js_urls.add(full)
         # JS paths referenced in inline scripts
         for tag in soup.find_all("script", src=False):
             for m in re.finditer(r'[\'"`]([^\'"`]*\.js(?:\?[^\'"`]*)?)[\'"`]',
@@ -1614,15 +1758,22 @@ class JSCollector:
 def _run(cmd, log, label, timeout=120):
     try:
         p = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
-        if p.returncode == 0:
-            lines = [l.strip() for l in p.stdout.splitlines() if l.strip()]
-            log.success(f"{label}: {len(lines)} URLs")
+        lines = [l.strip() for l in p.stdout.splitlines() if l.strip()]
+        if lines:
+            # Return results even on non-zero exit — some tools (amass, chaos)
+            # exit 1 but still write valid output to stdout
+            if log:
+                log.success(f"{label}: {len(lines)} results")
             return lines
-        log.warn(f"{label} non-zero exit")
+        if p.returncode != 0:
+            if log:
+                log.warn(f"{label} returned no results")
     except FileNotFoundError:
-        log.warn(f"{label} not installed")
+        if log:
+            log.warn(f"{label} not installed")
     except subprocess.TimeoutExpired:
-        log.warn(f"{label} timed out")
+        if log:
+            log.warn(f"{label} timed out (partial results may be available)")
     return []
 
 def _run_stdin(cmd, stdin_data, log, label, timeout=120):
@@ -1701,6 +1852,10 @@ def collect_with_subjs(domain, log):
 def collect_subdomains(domain, log, session, out_dir=None):
     log.section("STEP 0: Subdomain Enumeration")
     subs = set()
+
+    # ── Passive API Sources ───────────────────────────────────────────────
+
+    # 1. crt.sh — certificate transparency logs
     try:
         r = session.get(f"https://crt.sh/?q=%.{domain}&output=json", timeout=20)
         if r.status_code == 200:
@@ -1712,22 +1867,220 @@ def collect_subdomains(domain, log, session, out_dir=None):
             log.success(f"crt.sh: {len(subs)} subdomains")
     except Exception as e:
         log.warn(f"crt.sh: {e}")
-    for tool, cmd in [
-        ("Subfinder",   ["subfinder",   "-d", domain, "-silent"]),
-        ("Assetfinder", ["assetfinder", "--subs-only", domain]),
-        ("Amass",       ["amass", "enum", "-passive", "-d", domain]),
-    ]:
-        subs.update(_run(cmd, log, tool))
-    log.success(f"Total subdomains: {len(subs)}")
 
-    # Save to file
-    if out_dir and subs:
+    # 2. HackerTarget — fast passive DNS
+    try:
+        r = session.get(f"https://api.hackertarget.com/hostsearch/?q={domain}", timeout=15)
+        if r.status_code == 200 and "error" not in r.text.lower()[:50]:
+            before = len(subs)
+            for line in r.text.splitlines():
+                if "," in line:
+                    sub = line.split(",")[0].strip()
+                    if domain in sub:
+                        subs.add(sub)
+            log.success(f"HackerTarget: {len(subs)-before} subdomains")
+    except Exception:
+        pass
+
+    # 3. RapidDNS
+    try:
+        r = session.get(f"https://rapiddns.io/subdomain/{domain}?full=1#result", timeout=15)
+        if r.status_code == 200:
+            before = len(subs)
+            for m in re.finditer(rf'([a-zA-Z0-9][a-zA-Z0-9\-\.]*\.{re.escape(domain)})', r.text):
+                subs.add(m.group(1).lower())
+            log.success(f"RapidDNS: {len(subs)-before} subdomains")
+    except Exception:
+        pass
+
+    # 4. AlienVault OTX
+    try:
+        r = session.get(
+            f"https://otx.alienvault.com/api/v1/indicators/domain/{domain}/passive_dns",
+            timeout=15
+        )
+        if r.status_code == 200:
+            before = len(subs)
+            for entry in r.json().get("passive_dns", []):
+                host = entry.get("hostname", "")
+                if domain in host:
+                    subs.add(host.strip().lstrip("*."))
+            log.success(f"AlienVault OTX: {len(subs)-before} subdomains")
+    except Exception:
+        pass
+
+    # 5. URLScan.io
+    try:
+        r = session.get(
+            f"https://urlscan.io/api/v1/search/?q=domain:{domain}&size=100",
+            timeout=15
+        )
+        if r.status_code == 200:
+            before = len(subs)
+            for result in r.json().get("results", []):
+                page_domain = result.get("page", {}).get("domain", "")
+                if domain in page_domain:
+                    subs.add(page_domain)
+            log.success(f"URLScan.io: {len(subs)-before} subdomains")
+    except Exception:
+        pass
+
+    # 6. ThreatCrowd
+    try:
+        r = session.get(
+            f"https://www.threatcrowd.org/searchApi/v2/domain/report/?domain={domain}",
+            timeout=15
+        )
+        if r.status_code == 200:
+            before = len(subs)
+            for sub in r.json().get("subdomains", []):
+                if domain in sub:
+                    subs.add(sub.strip())
+            log.success(f"ThreatCrowd: {len(subs)-before} subdomains")
+    except Exception:
+        pass
+
+    # 7. SecurityTrails (no key needed for basic)
+    try:
+        r = session.get(
+            f"https://api.securitytrails.com/v1/domain/{domain}/subdomains",
+            headers={"apikey": ""},
+            timeout=15
+        )
+        if r.status_code == 200:
+            before = len(subs)
+            for sub in r.json().get("subdomains", []):
+                subs.add(f"{sub}.{domain}")
+            log.success(f"SecurityTrails: {len(subs)-before} subdomains")
+    except Exception:
+        pass
+
+    # 8. DNS Dumpster (scrape)
+    try:
+        s2 = requests.Session()
+        r1 = s2.get("https://dnsdumpster.com", timeout=10)
+        csrf = re.search(r'csrfmiddlewaretoken.*?value=["\'](\w+)["\']', r1.text)
+        if csrf:
+            token = csrf.group(1)
+            r2 = s2.post(
+                "https://dnsdumpster.com",
+                data={"csrfmiddlewaretoken": token, "targetip": domain, "user": "free"},
+                headers={"Referer": "https://dnsdumpster.com"},
+                timeout=15
+            )
+            before = len(subs)
+            for m in re.finditer(rf'([a-zA-Z0-9][a-zA-Z0-9\-\.]*\.{re.escape(domain)})', r2.text):
+                subs.add(m.group(1).lower())
+            log.success(f"DNSDumpster: {len(subs)-before} subdomains")
+    except Exception:
+        pass
+
+    # ── Tool-Based Sources ────────────────────────────────────────────────
+
+    tool_configs = [
+        # (tool_name, command, timeout_seconds)
+        ("Subfinder",   ["subfinder",   "-d", domain, "-silent", "-all"],      180),
+        ("Assetfinder", ["assetfinder", "--subs-only", domain],                 60),
+        ("Amass",       ["amass", "enum", "-passive", "-d", domain],            300),
+        ("Chaos",       ["chaos", "-d", domain, "-silent"],                     60),
+    ]
+    for tool, cmd, timeout in tool_configs:
+        results = _run(cmd, log, tool, timeout=timeout)
+        subs.update(r.strip() for r in results if domain in r)
+
+    # ── MassDNS bruteforce (if installed) ───────────────────────────────
+    # massdns does DNS brute-force using a wordlist — finds subdomains
+    # that passive sources miss. Only runs if massdns is installed.
+    if shutil.which("massdns"):
+        wordlist_paths = [
+            "/usr/share/seclists/Discovery/DNS/subdomains-top1million-5000.txt",
+            "/usr/share/wordlists/seclists/Discovery/DNS/subdomains-top1million-5000.txt",
+            "/opt/SecLists/Discovery/DNS/subdomains-top1million-5000.txt",
+            os.path.expanduser("~/wordlists/subdomains.txt"),
+        ]
+        wl = next((w for w in wordlist_paths if os.path.isfile(w)), None)
+        resolvers = "/etc/resolv.conf"
+        if wl:
+            try:
+                log.info(f"MassDNS bruteforce with wordlist: {wl}")
+                # Build target list: word.domain for each word in wordlist
+                with open(wl) as wf:
+                    targets = [f"{w.strip()}.{domain}\n" for w in wf if w.strip()]
+                with tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False) as tf:
+                    tf.writelines(targets[:5000])  # cap at 5000 for speed
+                    tf_path = tf.name
+                proc = subprocess.run(
+                    ["massdns", "-r", resolvers, "-t", "A", "-o", "S", tf_path],
+                    capture_output=True, text=True, timeout=120
+                )
+                os.unlink(tf_path)
+                before = len(subs)
+                for line in proc.stdout.splitlines():
+                    # massdns output: sub.domain. A 1.2.3.4
+                    parts = line.split()
+                    if parts and parts[0].endswith("."):
+                        host = parts[0].rstrip(".")
+                        if domain in host:
+                            subs.add(host)
+                log.success(f"MassDNS: {len(subs)-before} additional subdomains")
+            except Exception as e:
+                log.warn(f"MassDNS: {e}")
+        else:
+            log.warn("MassDNS installed but no wordlist found — install SecLists")
+    else:
+        log.info("MassDNS not installed — skipping bruteforce (optional, install for more coverage)")
+
+    # ── Filter & Save ─────────────────────────────────────────────────────
+
+    # Remove wildcards, empties, and non-subdomains
+    subs = {s.strip().lstrip("*.") for s in subs
+            if s and domain in s and s != domain}
+
+    log.success(f"Total unique subdomains: {len(subs)}")
+
+    # ── Alive check with httpx ────────────────────────────────────────────
+    alive_subs = list(subs)
+    if shutil.which("httpx") and subs:
+        log.info(f"Checking which subdomains are alive with httpx...")
+        try:
+            with tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False) as tf:
+                tf.write("\n".join(sorted(subs)))
+                tf_path = tf.name
+            proc = subprocess.run(
+                ["httpx", "-l", tf_path, "-silent", "-no-color"],
+                capture_output=True, text=True, timeout=180
+            )
+            os.unlink(tf_path)
+            if proc.stdout.strip():
+                alive_lines = [l.strip() for l in proc.stdout.splitlines() if l.strip()]
+                # Extract just hostnames from httpx output (strips https://)
+                alive_hosts = set()
+                for line in alive_lines:
+                    host = line.replace("https://","").replace("http://","").rstrip("/")
+                    alive_hosts.add(host)
+                alive_subs = [s for s in subs if s in alive_hosts]
+                log.success(f"Alive subdomains: {len(alive_subs)}/{len(subs)}")
+        except Exception as e:
+            log.warn(f"httpx alive check failed: {e} — using all subdomains")
+    else:
+        if not shutil.which("httpx"):
+            log.warn("httpx not installed — skipping alive check (install for faster scans)")
+
+    if out_dir:
+        # Save ALL subdomains
         sub_file = Path(out_dir) / "total_subdomains.txt"
         with open(sub_file, "w") as f:
             f.write("\n".join(sorted(subs)) + "\n")
-        log.success(f"Subdomains saved → {sub_file}")
+        log.success(f"All subdomains saved → {sub_file} ({len(subs)} total)")
 
-    return list(subs)
+        # Save alive subdomains separately
+        if alive_subs and len(alive_subs) != len(subs):
+            alive_file = Path(out_dir) / "alive_subdomains.txt"
+            with open(alive_file, "w") as f:
+                f.write("\n".join(sorted(alive_subs)) + "\n")
+            log.success(f"Alive subdomains saved → {alive_file} ({len(alive_subs)} alive)")
+
+    return alive_subs
 
 def make_session(cookies=None, headers=None, proxy=None):
     s = requests.Session()
@@ -1753,8 +2106,125 @@ def make_session(cookies=None, headers=None, proxy=None):
 #  MAIN ORCHESTRATOR
 # ─────────────────────────────────────────────
 
+def run_scan_from_list(args):
+    """
+    -l mode: load a pre-crawled URL list and go straight to
+    secrets + XSS + redirect scanning. Skips subdomain enum
+    and crawling entirely.
+    """
+    list_file = args.list
+
+    # Validate file
+    if not os.path.isfile(list_file):
+        print(f"{R}[!] File not found: {list_file}{RESET}")
+        sys.exit(1)
+
+    # Read URLs
+    with open(list_file, "r") as f:
+        raw_lines = [l.strip() for l in f if l.strip() and not l.startswith("#")]
+
+    urls = [u for u in raw_lines if u.startswith(("http://", "https://"))]
+    if not urls:
+        print(f"{R}[!] No valid URLs found in {list_file}{RESET}")
+        sys.exit(1)
+
+    # Extract domain from first URL for output folder naming
+    domain = args.domain if args.domain else urllib.parse.urlparse(urls[0]).netloc
+    domain = domain.replace("https://","").replace("http://","").rstrip("/")
+
+    out_dir = make_output_dir(domain)
+    ts      = datetime.now().strftime("%Y%m%d_%H%M%S")
+    log     = Logger(out_dir)
+    session = make_session(
+        cookies=args.cookies,
+        headers=dict(h.split(":",1) for h in args.headers) if args.headers else None,
+        proxy=args.proxy
+    )
+
+    banner()
+    print(f"{C}  Mode       :{RESET} {BOLD}{Y}--list mode (pre-crawled URLs){RESET}")
+    print(f"{C}  List file  :{RESET} {BOLD}{list_file}{RESET}")
+    print(f"{C}  URLs loaded:{RESET} {BOLD}{len(urls)}{RESET}")
+    print(f"{C}  Domain     :{RESET} {BOLD}{domain}{RESET}")
+    print(f"{C}  Output dir :{RESET} {BOLD}{out_dir}/{RESET}")
+    _ts = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    print(f"{C}  Started    :{RESET} {_ts}")
+    print()
+
+    # Split into JS and page URLs
+    js_urls   = [u for u in urls if ".js" in urllib.parse.urlparse(u).path.lower()]
+    page_urls = [u for u in urls if u not in js_urls]
+
+    log.success(f"JS files: {len(js_urls)} | Page URLs: {len(page_urls)}")
+
+    # Save crawled-urls.txt
+    crawl_file = out_dir / "crawled-urls.txt"
+    with open(crawl_file, "w") as f:
+        f.write("\n".join(sorted(urls)) + "\n")
+    log.success(f"URLs saved → {crawl_file}")
+
+    # ── Step 1: Extract endpoints from JS ─────────────────────────────
+    ep = EndpointExtractor(log)
+    log.section("STEP 1: Extracting Endpoints from JS")
+    def do_extract(url):
+        try:
+            r = session.get(url, timeout=10)
+            if r.status_code == 200:
+                ep.extract(r.text, url, url)
+        except Exception:
+            pass
+    with ThreadPoolExecutor(max_workers=args.workers) as ex:
+        list(ex.map(do_extract, js_urls[:300]))
+    page_urls_all = list(set(page_urls) | ep.all_urls)
+    ep.print_summary()
+    if ep.endpoints:
+        ep_file = out_dir / "endpoints.txt"
+        with open(ep_file, "w") as f:
+            f.write("\n".join(sorted(ep.endpoints)) + "\n")
+        log.success(f"Endpoints saved → {ep_file}")
+
+    # ── Step 2: Secret Scanning ────────────────────────────────────────
+    scanner = SecretScanner(log, session, target_domain=domain)
+    all_targets = js_urls + [u for u in page_urls if u not in js_urls]
+    scanner.scan_parallel(all_targets, workers=args.workers)
+
+    # ── Step 3: XSS Scanning ──────────────────────────────────────────
+    if not args.no_xss:
+        if page_urls_all:
+            XSSScanner(log, session, target_domain=domain).scan_urls(
+                page_urls_all[:500], workers=args.workers)
+        else:
+            log.warn("No page URLs with params found for XSS testing")
+
+    # ── Step 4: Open Redirect Scanning ────────────────────────────────
+    if not args.no_redirect:
+        if page_urls_all:
+            RedirectScanner(log, session, domain).scan_urls(
+                page_urls_all[:500], workers=args.workers)
+        else:
+            log.warn("No page URLs found for redirect testing")
+
+    # ── Summary ───────────────────────────────────────────────────────
+    log.section("SCAN COMPLETE")
+    ns = len(log.findings)
+    nx = len(log.xss)
+    nr = len(log.redirs)
+
+    if ns == nx == nr == 0:
+        print(f"{G}  Nothing found{RESET}")
+    else:
+        if ns: print(f"{R}{BOLD}  🔑 {ns} secret(s){RESET}")
+        if nx: print(f"{R}{BOLD}  ⚡ {nx} XSS finding(s){RESET}")
+        if nr: print(f"{BR}{BOLD}  ↩  {nr} open redirect finding(s){RESET}")
+
+    print(f"\n  {DIM}Files scanned: {scanner.scanned}{RESET}")
+    print(f"  {DIM}Output dir   : {out_dir}/{RESET}")
+    log.save(domain, ts)
+    print(f"\n{M}{BOLD}  Done! 🎯{RESET}\n")
+
+
 def run_scan(args):
-    domain  = args.domain.strip().replace("https://","").replace("http://","").rstrip("/")
+    domain  = (args.domain or "").strip().replace("https://","").replace("http://","").rstrip("/")
     out_dir = make_output_dir(domain)
     ts      = datetime.now().strftime("%Y%m%d_%H%M%S")
     log     = Logger(out_dir)
@@ -1915,6 +2385,8 @@ def run_scan(args):
     for d in scan_domains:
         for path in [
             "/.env", "/.env.local", "/.env.production", "/.env.backup",
+            "/.env.development", "/.env.staging", "/.env.test", "/.env.example",
+            "/.env.sample", "/.env.orig", "/.env.bak", "/.env.old", "/.env.save",
             "/config.json", "/config.js", "/settings.json",
             "/api/config", "/api/settings", "/api/env",
             "/app/config", "/static/config.json",
@@ -1931,10 +2403,45 @@ def run_scan(args):
             non_js_pages.add(f"http://{d}{path}")
 
     # Enforce scope: only scan in-scope URLs for secrets
-    js_inscope       = [u for u in all_js      if is_in_scope(u, domain)]
-    pages_inscope    = [u for u in non_js_pages if is_in_scope(u, domain) and u not in all_js]
+    js_inscope    = [u for u in all_js      if is_in_scope(u, domain)]
+    pages_inscope = [u for u in non_js_pages if is_in_scope(u, domain) and u not in all_js]
+
+    # ── Smart deduplication ──────────────────────────────────────────
+    # Many tools (Wayback, GAU) return thousands of historical JS URLs
+    # that are just the same file with different timestamps/versions.
+    # Dedup by path (ignore query string for JS files) to avoid
+    # scanning the same bundle 50 times across archive snapshots.
+    def dedup_by_path(urls):
+        seen_paths = set()
+        unique = []
+        for u in urls:
+            p = urllib.parse.urlparse(u)
+            # For JS files: deduplicate by host+path (ignore ?v=123 cache busters)
+            key = f"{p.netloc}{p.path}"
+            if key not in seen_paths:
+                seen_paths.add(key)
+                unique.append(u)
+        return unique
+
+    js_inscope    = dedup_by_path(js_inscope)
+    pages_inscope = dedup_by_path(pages_inscope)
+
+    # ── Smart caps ───────────────────────────────────────────────────
+    # Cap at reasonable limits — beyond these, marginal value drops sharply
+    # Priority: deduplicated unique paths first
+    JS_CAP    = args.max_js
+    PAGES_CAP = args.max_pages
+
+    if len(js_inscope) > JS_CAP:
+        log.warn(f"Capping JS scan: {len(js_inscope)} → {JS_CAP} (unique paths after dedup)")
+        js_inscope = js_inscope[:JS_CAP]
+
+    if len(pages_inscope) > PAGES_CAP:
+        log.warn(f"Capping pages scan: {len(pages_inscope)} → {PAGES_CAP}")
+        pages_inscope = pages_inscope[:PAGES_CAP]
+
     all_scan_targets = js_inscope + pages_inscope
-    log.info(f"Secret scan targets: {len(js_inscope)} JS + {len(pages_inscope)} pages/endpoints (in-scope only)")
+    log.info(f"Secret scan targets: {len(js_inscope)} JS + {len(pages_inscope)} pages/endpoints")
     scanner.scan_parallel(all_scan_targets, workers=args.workers)
 
     # ── 4. XSS scanning ───────────────────────────
@@ -1989,29 +2496,57 @@ def run_scan(args):
 #  CLI
 # ─────────────────────────────────────────────
 
+VERSION = "2.0.0"
+
 def main():
     p = argparse.ArgumentParser(
-        description="HackLens — JS Secrets + XSS + Open Redirect Scanner",
+        description=f"HackLens v{VERSION} — Web Recon & Vulnerability Scanner",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
+  # Standard scan (auto crawl + recon)
   python3 hacklens.py -d example.com
+
+  # Deep scan with subdomain enumeration
   python3 hacklens.py -d example.com --deep --subs
-  python3 hacklens.py -d example.com --no-xss --no-redirect
+
+  # Use pre-crawled URL list (skip recon, go straight to scanning)
+  python3 hacklens.py -d example.com -l crawled_urls.txt
+
+  # Authenticated scan through Burp
   python3 hacklens.py -d example.com -c "session=abc" -p http://127.0.0.1:8080
-  python3 hacklens.py -d example.com -w 20 --deep --subs
         """
     )
-    p.add_argument("-d","--domain",      required=True,       help="Target domain (e.g. example.com)")
-    p.add_argument("--deep",             action="store_true",  help="Use Wayback, GAU, extra sources")
-    p.add_argument("--subs",             action="store_true",  help="Enumerate & scan subdomains")
-    p.add_argument("--no-xss",           action="store_true",  help="Skip XSS scanning")
-    p.add_argument("--no-redirect",      action="store_true",  help="Skip open redirect scanning")
-    p.add_argument("-c","--cookies",     help="Cookie string (e.g. 'session=abc;csrf=xyz')")
-    p.add_argument("-H","--headers",     nargs="+",            help="Extra headers (e.g. 'X-Auth: token')")
-    p.add_argument("-p","--proxy",       help="Proxy URL (e.g. http://127.0.0.1:8080)")
-    p.add_argument("-w","--workers",     type=int, default=10, help="Parallel workers (default: 10)")
-    run_scan(p.parse_args())
+    # Target — one of -d or -l is required
+    target_group = p.add_mutually_exclusive_group(required=True)
+    target_group.add_argument(
+        "-d", "--domain",
+        help="Target domain (e.g. example.com)"
+    )
+    target_group.add_argument(
+        "-l", "--list",
+        metavar="FILE",
+        help="Pre-crawled URL list file — skips recon/crawling, "
+             "directly scans all URLs for secrets, XSS, redirects"
+    )
+
+    p.add_argument("--deep",        action="store_true", help="Use Wayback, GAU, extra sources (with -d)")
+    p.add_argument("--subs",        action="store_true", help="Enumerate subdomains (with -d)")
+    p.add_argument("--no-xss",      action="store_true", help="Skip XSS scanning")
+    p.add_argument("--no-redirect", action="store_true", help="Skip open redirect scanning")
+    p.add_argument("-c","--cookies", help="Cookie string")
+    p.add_argument("-H","--headers", nargs="+",          help="Extra headers")
+    p.add_argument("-p","--proxy",   help="Proxy URL (e.g. http://127.0.0.1:8080)")
+    p.add_argument("-w","--workers", type=int, default=5, help="Parallel workers (default: 5)")
+    p.add_argument("--max-js",       type=int, default=2000, help="Max JS files to scan")
+    p.add_argument("--max-pages",    type=int, default=1000, help="Max page URLs to scan")
+    p.add_argument("--version",      action="version", version=f"HackLens v{VERSION}")
+
+    args = p.parse_args()
+    if args.list:
+        run_scan_from_list(args)
+    else:
+        run_scan(args)
 
 if __name__ == "__main__":
     main()
