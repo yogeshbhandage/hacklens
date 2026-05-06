@@ -117,7 +117,7 @@ bash run.sh -d target.com --no-xss --no-redirect
 **Skip all recon and crawling** — feed HackLens a URL list you already have. It goes straight to secret scanning, XSS detection, and open redirect testing.
 
 ```bash
-bash run.sh -d target.com -l urls.txt
+bash run.sh -l urls.txt
 ```
 
 **When to use `-l`:**
