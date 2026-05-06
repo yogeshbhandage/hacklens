@@ -25,7 +25,7 @@ cat << 'BANNER'
   ██║  ██║██║  ██║╚██████╗██║  ██╗███████╗███████╗██║ ╚████║███████║
   ╚═╝  ╚═╝╚═╝  ╚═╝ ╚═════╝╚═╝  ╚═╝╚══════╝╚══════╝╚═╝  ╚═══╝╚══════╝
 BANNER
-echo -e "${RESET}${CYAN}  v2.0 Installer | Created by Yogesh Bhandage | yogeshbhandage.com${RESET}\n"
+echo -e "${RESET}${CYAN}  v2.1 Installer | Created by Yogesh Bhandage | yogeshbhandage.com${RESET}\n"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
