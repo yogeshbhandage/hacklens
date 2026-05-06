@@ -1030,6 +1030,23 @@ def _payload_for_context(ctx, canary):
     return payloads[0]
 
 
+
+# Params most likely to reflect user input into HTML response
+XSS_REFLECT_PARAMS = {
+    'q','query','search','s','keyword','term','text','name','title',
+    'message','msg','content','data','input','value','val','username',
+    'user','email','callback','jsonp','ref','referrer','page','id',
+    'error','code','status','action','filter','sort','order','category',
+    'tag','label','from','subject','body','comment','description',
+    'template','tpl','lang','locale','format','type','view','src',
+    'source','dest','target','file','path','item','product','article',
+    'post','slug','token','key','hash','param','output','render',
+    'return','next','redirect','url','to','prefix','suffix','text',
+    'heading','title','subtitle','caption','alt','placeholder','hint',
+    'notice','alert','info','warning','success','message','note',
+}
+
+
 class XSSScanner:
     def __init__(self, log, session, target_domain=""):
         self.log           = log
