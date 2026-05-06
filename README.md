@@ -5,7 +5,7 @@
 <h1 align="center">HackLens</h1>
 <p align="center"><b>Web Recon & Vulnerability Scanner for Bug Bounty Hunters</b></p>
 <p align="center">
-  <img src="https://img.shields.io/badge/Version-2.0.0-brightgreen?style=flat-square"/>
+  <img src="https://img.shields.io/badge/Version-2.1.0-brightgreen?style=flat-square"/>
   <img src="https://img.shields.io/badge/Python-3.8%2B-blue?style=flat-square"/>
   <img src="https://img.shields.io/badge/Patterns-162-red?style=flat-square"/>
   <img src="https://img.shields.io/badge/Platform-Linux%20%7C%20Kali%20%7C%20macOS-lightgrey?style=flat-square"/>
@@ -117,7 +117,7 @@ bash run.sh -d target.com --no-xss --no-redirect
 **Skip all recon and crawling** — feed HackLens a URL list you already have. It goes straight to secret scanning, XSS detection, and open redirect testing.
 
 ```bash
-bash run.sh -l urls.txt
+bash run.sh -d target.com -l urls.txt
 ```
 
 **When to use `-l`:**
@@ -293,7 +293,6 @@ HackLens/
   hacklens.py         ← main scanner
   install.sh          ← installer
   run.sh              ← launcher (auto-created)
-  update.sh           ← Update the tool
   requirements.txt    ← Python deps
   README.md
   TECHNICAL_DOCS.md
