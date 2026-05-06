@@ -47,7 +47,7 @@ Domain Input
 
 Or skip recon entirely with a pre-crawled URL list:
 ```
-bash run.sh -d target.com -l my_burp_urls.txt
+bash run.sh -l my_burp_urls.txt
 ```
 
 ---
