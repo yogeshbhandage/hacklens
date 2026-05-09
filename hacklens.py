@@ -313,11 +313,12 @@ SECRET_PATTERNS = {
     "Pusher Key":             r'(?i)["\']pusher[_\-]?(?:app[_\-]?)?key["\']\s*[:=]\s*["\']([a-f0-9]{20})["\']',
     "Amplitude Key":          r'(?i)["\']amplitude[_\-]?api[_\-]?key["\']\s*[:=]\s*["\']([a-f0-9]{32})["\']',
     # -- New credential/server patterns --
-    "MySQL Password":       r'(?i)["\']mysql[_-]?pass(?:word)?["\']\s*[:=]\s*["\']([^\s\'"<>{},\\]{6,})["\']'  ,
-    "MySQL Username":       r'(?i)["\']mysql[_-]?user(?:name)?["\']\s*[:=]\s*["\']([^\s\'"<>{},\\]{3,})["\']'  ,
-    "MySQL Server":         r'(?i)["\']mysql[_-]?(?:server|host)["\']\s*[:=]\s*["\']([^\s\'"<>{},\\]{4,})["\']'  ,
-    "Engine Server":        r'(?i)["\']engine[_-]?server["\']\s*[:=]\s*["\']([^\s\'"<>{},\\]{4,})["\']'  ,
-    "Encryption Password":  r'(?i)["\']encryption[_-]?pass(?:word)?["\']\s*[:=]\s*["\']([^\s\'"<>{},\\]{6,})["\']'  ,
+    "MySQL Password":       r'(?i)["\'](?:mysql_pass(?:word)?|MYSQL_PASSWORD|MYSQL_PASS|db_password|DB_PASSWORD|DB_PASS)["\']\s*[:=]\s*["\']([^\s\'"<>]{6,})["\']'  ,
+    "MySQL Username":       r'(?i)["\'](?:mysql_user(?:name)?|MYSQL_USERNAME|MYSQL_USER|db_user(?:name)?|DB_USERNAME|DB_USER)["\']\s*[:=]\s*["\']([^\s\'"<>]{3,})["\']'  ,
+    "MySQL Server":         r'(?i)["\'](?:mysql_server|mysql_host|MYSQL_SERVER|MYSQL_HOST|db_host|DB_HOST|database_host)["\']\s*[:=]\s*["\']([^\s\'"<>]{4,})["\']'  ,
+    "DB Host Env":          r'(?i)(?:DB_HOST|MYSQL_HOST|POSTGRES_HOST|DATABASE_HOST)\s*=\s*(\S{4,})'  ,
+    "Engine Server":        r'(?i)["\'](?:engine_server|engine_host|ENGINE_SERVER|ENGINE_HOST|engineServer|engineHost)["\']\s*[:=]\s*["\']([^\s\'"<>]{4,})["\']'  ,
+    "Encryption Password":  r'(?i)["\'](?:encryption_password|ENCRYPTION_PASSWORD|encryptionPassword|encrypt_pass|encrypt_password|ENCRYPT_PASSWORD)["\']\s*[:=]\s*["\']([^\s\'"<>]{6,})["\']'  ,
     "Secret Key":           r'(?i)["\']secret[_-]?key["\']\s*[:=]\s*["\']([A-Za-z0-9\-_\/+]{16,})["\']'  ,
     "Signing Key":          r'(?i)["\']signing[_-]?key["\']\s*[:=]\s*["\']([A-Za-z0-9\-_\/+]{16,})["\']'  ,
     "Admin Password":       r'(?i)["\']admin[_-]?pass(?:word)?["\']\s*[:=]\s*["\']([^\s\'"<>{},\\]{6,})["\']'  ,
@@ -327,12 +328,74 @@ SECRET_PATTERNS = {
     "App Secret":           r'(?i)["\']app[_-]?secret["\']\s*[:=]\s*["\']([A-Za-z0-9\-_\/+]{16,})["\']'  ,
     "Cookie Secret":        r'(?i)["\'](?:cookie|session|express)[_-]?secret["\']\s*[:=]\s*["\']([A-Za-z0-9\-_\/+]{16,})["\']'  ,
     "Connection String":    r'(?i)["\']conn(?:ection)?[_-]?str(?:ing)?["\']\s*[:=]\s*["\']([^\s\'"<>]{20,})["\']'  ,
-    "DB Pass Env":          r'(?i)(?:DB_PASS(?:WORD)?|MYSQL_PASS(?:WORD)?|POSTGRES_PASS(?:WORD)?)\s*=\s*(\S{4,})'  ,
+    "DB Pass Env":          r'(?i)(?:DB_PASSWORD|DB_PASS|MYSQL_PASSWORD|MYSQL_PASS|POSTGRES_PASSWORD|MARIADB_PASSWORD)\s*=\s*(\S{4,})'  ,
     "Secret Key Env":       r'(?i)(?:SECRET_KEY|APP_SECRET|APPLICATION_SECRET)\s*=\s*([A-Za-z0-9\-_\/+]{16,})'  ,
     "Encrypt Key Env":      r'(?i)(?:ENCRYPTION_KEY|ENCRYPT_KEY|ENC_KEY)\s*=\s*([A-Za-z0-9\-_\/+]{16,})'  ,
     "Webhook Secret":       r'(?i)["\']webhook[_-]?secret["\']\s*[:=]\s*["\']([A-Za-z0-9\-_\/+]{16,})["\']'  ,
     "LDAP Password":        r'(?i)["\']ldap[_-]?pass(?:word)?["\']\s*[:=]\s*["\']([^\s\'"<>{},\\]{6,})["\']'  ,
     "Bearer Secret":        r'(?i)["\']bearer[_-]?secret["\']\s*[:=]\s*["\']([A-Za-z0-9\-_\/+]{20,})["\']'  ,
+
+
+
+    # ── From Burp Extension — missing in HackLens ────────────────
+    'AWS Session Token'                   : '(?i)(?:AWS_SESSION_TOKEN|AWSSessionToken|SessionToken)\\s*[:=,]\\s*["\']([A-Za-z0-9/+=]{100,})["\']',
+    'AWS MWS Auth Token'                  : 'amzn\\.mws\\.[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}',
+    'Azure Client ID'                     : '(?i)AZURE_CLIENT_ID\\s*[:=]\\s*["\']([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})["\']',
+    'Azure SAS Token'                     : '(?i)(?:AZURE_SAS_TOKEN|sas_token)\\s*[:=]\\s*["\']([A-Za-z0-9%\\-_.~+=/]{20,512})["\']',
+    'Azure Storage Full'                  : 'DefaultEndpointsProtocol=https;AccountName=[^;]+;AccountKey=[A-Za-z0-9+/=]{86}==',
+    'Google OAuth Token'                  : 'ya29\\.[0-9A-Za-z\\-_]{60,}',
+    'Google Client Secret'                : '(?i)GOOGLE_CLIENT_SECRET\\s*[:=]\\s*["\']([A-Za-z0-9\\-_]{24})["\']',
+    'Stripe Restricted Key'               : 'rk_live_[0-9A-Za-z]{24,}',
+    'Square OAuth Secret'                 : 'sq0csp-[0-9A-Za-z\\-_]{43}',
+    'PayPal Client Secret'                : '(?i)PAYPAL_CLIENT_SECRET\\s*[:=]\\s*["\']([A-Za-z0-9\\-_]{60,100})["\']',
+    'Slack User Token'                    : 'xoxp-[0-9]{9,13}-[0-9]{9,13}-[0-9]{9,13}-[0-9a-f]{32}',
+    'Slack Workspace Token'               : 'xoxa-[0-9A-Za-z\\-]{50,}',
+    'Twitter Access Token'                : '(?i)TWITTER_ACCESS_TOKEN\\s*[:=]\\s*["\']([0-9]+-[A-Za-z0-9]{40})["\']',
+    'Twitter OAuth Token'                 : '(?i)TWITTER_OAUTH_TOKEN\\s*[:=]\\s*["\']([A-Za-z0-9\\-_]{40,80})["\']',
+    "PGPASSWORD":            r'(?i)PGPASSWORD\s*[:=]\s*["\']([^\'"]{4,128})["\']'  ,
+    'OAuth Token'                         : '(?i)(?:OAUTH_TOKEN|oauthToken)\\s*[:=]\\s*["\']([A-Za-z0-9\\-_.+/=]{20,512})["\']',
+    'OAuth Client ID'                     : '(?i)OAUTH_CLIENT_ID\\s*[:=]\\s*["\']([A-Za-z0-9\\-_]{8,128})["\']',
+    'OAuth Client Secret'                 : '(?i)OAUTH_CLIENT_SECRET\\s*[:=]\\s*["\']([A-Za-z0-9\\-_]{16,256})["\']',
+    'Access Token (env)'                  : '(?i)(?:ACCESS_TOKEN|accessToken)\\s*[:=]\\s*["\']([A-Za-z0-9\\-_.+/=]{20,512})["\']',
+    'Refresh Token (env)'                 : '(?i)(?:REFRESH_TOKEN|refreshToken)\\s*[:=]\\s*["\']([A-Za-z0-9\\-_.+/=]{20,512})["\']',
+    'Bearer Token (env)'                  : '(?i)(?:BEARER_TOKEN|bearerToken)\\s*[:=]\\s*["\']([A-Za-z0-9\\-_.+/=]{20,512})["\']',
+    'Session ID'                          : '(?i)(?:SESSION_ID|sessionId|PHPSESSID|JSESSIONID)\\s*[:=]\\s*["\']([A-Za-z0-9\\-_]{20,256})["\']',
+    'Master Key'                          : '(?i)(?:MASTER_KEY|master_key|MASTER_SECRET|ROOT_KEY)\\s*[:=]\\s*["\']([A-Za-z0-9\\-_+/=]{16,256})["\']',
+    'AES Key'                             : '(?i)(?:AES_KEY|aesKey|CIPHER_KEY|ENCRYPT_KEY|ENCRYPTION_KEY)\\s*[:=]\\s*["\']([A-Za-z0-9+/=\\-_]{16,512})["\']',
+    'PBKDF Secret'                        : '(?i)(?:PBKDF_SECRET|PBKDF_PASS|SCRYPT_SECRET|KDF_SECRET)\\s*[:=]\\s*["\']([^"\']{8,256})["\']',
+    'HMAC Key'                            : '(?i)(?:HMAC_SECRET|hmacSecret|HMAC_KEY)\\s*[:=]\\s*["\']([A-Za-z0-9\\-_+/=]{16,256})["\']',
+    'Databricks Token'                    : 'dapi[a-f0-9]{28,36}',
+    'Kubernetes Token'                    : '(?i)(?:KUBE_TOKEN|K8S_TOKEN|KUBECONFIG_TOKEN)\\s*[:=]\\s*["\']([A-Za-z0-9\\-_.]{16,512})["\']',
+    'Terraform Token'                     : '[A-Za-z0-9]{14}\\.atlasv1\\.[A-Za-z0-9\\-_]{60,}',
+    'CircleCI Token'                      : '(?i)(?:CIRCLE_TOKEN|CIRCLECI_TOKEN)\\s*[:=]\\s*["\']([A-Za-z0-9]{40})["\']',
+    'DigitalOcean Token'                  : '(?i)(?:DIGITALOCEAN_TOKEN|DO_TOKEN)\\s*[:=]\\s*["\']([A-Za-z0-9]{64})["\']',
+    'DSA Private Key'                     : '-----BEGIN DSA PRIVATE KEY-----',
+    'Generic Private Key'                 : '-----BEGIN PRIVATE KEY-----',
+    'Certificate'                         : '-----BEGIN CERTIFICATE-----',
+    'UUID in Sensitive Key'               : '(?i)(?:api_key|apiKey|secret|token|account_id|session_id)\\s*[:=]\\s*["\']([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})["\']',
+    'apiKey (camelCase)'                  : '(?<![A-Za-z])apiKey\\s*[:=]\\s*["\']([A-Za-z0-9\\-_]{16,128})["\']',
+    'secretKey (camelCase)'               : '(?<![A-Za-z])secretKey\\s*[:=]\\s*["\']([A-Za-z0-9\\-_!@#$%^&*+/=]{8,256})["\']',
+    'authToken (camelCase)'               : '(?<![A-Za-z])authToken\\s*[:=]\\s*["\']([A-Za-z0-9\\-_.+/=]{16,512})["\']',
+    'clientSecret (camelCase)'            : '(?<![A-Za-z])clientSecret\\s*[:=]\\s*["\']([A-Za-z0-9\\-_]{16,256})["\']',
+    'privateKey (camelCase)'              : '(?<![A-Za-z])privateKey\\s*[:=]\\s*["\']([A-Za-z0-9\\-_+/=]{16,512})["\']',
+    'encryptionKey (camelCase)'           : '(?<![A-Za-z])encryptionKey\\s*[:=]\\s*["\']([A-Za-z0-9\\-_+/=]{16,256})["\']',
+    'dbPassword (camelCase)'              : '(?<![A-Za-z])dbPassword\\s*[:=]\\s*["\']([^"\']{4,128})["\']',
+    'accessToken (camelCase)'             : '(?<![A-Za-z])accessToken\\s*[:=]\\s*["\']([A-Za-z0-9\\-_.+/=]{16,512})["\']',
+    'jwtSecret (camelCase)'               : '(?<![A-Za-z])jwtSecret\\s*[:=]\\s*["\']([A-Za-z0-9\\-_]{12,256})["\']',
+    'webhookSecret (camelCase)'           : '(?<![A-Za-z])webhookSecret\\s*[:=]\\s*["\']([A-Za-z0-9\\-_]{8,256})["\']',
+    'signingSecret (camelCase)'           : '(?<![A-Za-z])signingSecret\\s*[:=]\\s*["\']([A-Za-z0-9\\-_]{8,256})["\']',
+    'cookieSecret (camelCase)'            : '(?<![A-Za-z])cookieSecret\\s*[:=]\\s*["\']([A-Za-z0-9\\-_]{8,256})["\']',
+    'sessionSecret (camelCase)'           : '(?<![A-Za-z])sessionSecret\\s*[:=]\\s*["\']([A-Za-z0-9\\-_]{8,256})["\']',
+    'refreshToken (camelCase)'            : '(?<![A-Za-z])refreshToken\\s*[:=]\\s*["\']([A-Za-z0-9\\-_.+/=]{16,512})["\']',
+    'JS Object Secret'                    : '(?i)["\'](secret|apikey|api_key|auth_token|password|secretkey|privatekey|encryptionkey|encryption_password|mysql_password)["\']\\s*:\\s*["\']([^"\']{8,256})["\']',
+    'JS Object DB Cred'                   : '(?i)["\'](db_pass|db_password|database_password|mysql_password|redis_password)["\']\\s*:\\s*["\']([^"\']{4,256})["\']',
+    'JS Object Token'                     : '(?i)["\'](access_token|refresh_token|id_token|bearer_token|oauth_token)["\']\\s*:\\s*["\']([A-Za-z0-9\\-_.+/=]{20,512})["\']',
+    '.env File in Link'                   : '(?i)(?:href|src|url|path)\\s*[=:]\\s*["\'][^"\']*\\.env["\']',
+    '.git in Link'                        : '(?i)(?:href|src|url|path)\\s*[=:]\\s*["\'][^"\']*\\.git(?:/|["\'])',
+    'Heroku Authorization'                : '(?i)HEROKU_AUTHORIZATION\\s*[:=]\\s*["\']([A-Za-z0-9\\-_]{20,60})["\']',
+    'Facebook Access Token'               : '(?i)(?:FACEBOOK_ACCESS_TOKEN|fbAccessToken)\\s*[:=]\\s*["\']?(EAA[A-Za-z0-9]{80,})["\']?',
+    'Sentry DSN (ingest)'                 : 'https://[0-9a-f]{32}@o[0-9]+\\.ingest\\.sentry\\.io/[0-9]+',
+    'Password in JSON'                    : '(?i)["\']password["\']\\s*:\\s*["\']([A-Za-z0-9\\-_!@#$%^&*+./]{6,128})["\']',
 
 }
 
@@ -2807,6 +2870,402 @@ def run_scan(args):
 
 VERSION = "2.1.0"
 
+def parse_burp_xml(xml_file):
+    """
+    Parse Burp Suite XML export file.
+    Returns list of dicts:
+      {url, method, headers, body, params_get, params_post, params_body_json}
+
+    How to export from Burp:
+      Proxy → HTTP History → Select all → Right click → Save items → XML
+    """
+    import base64
+    try:
+        import xml.etree.ElementTree as ET
+    except ImportError:
+        return []
+
+    try:
+        tree = ET.parse(xml_file)
+        root = tree.getroot()
+    except Exception as e:
+        print(f"{R}[!] Failed to parse Burp XML: {e}{RESET}")
+        return []
+
+    items = []
+    for item in root.findall('.//item'):
+        try:
+            # URL
+            url_el = item.find('url')
+            if url_el is None or not url_el.text:
+                continue
+            url = url_el.text.strip()
+
+            # Method
+            method_el = item.find('method')
+            method = (method_el.text or 'GET').strip().upper()
+
+            # Decode request (base64 in Burp XML)
+            req_el   = item.find('request')
+            req_b64  = (req_el.get('base64','false') == 'true') if req_el is not None else False
+            req_raw  = ''
+            if req_el is not None and req_el.text:
+                if req_b64:
+                    try:
+                        req_raw = base64.b64decode(req_el.text).decode('utf-8', errors='replace')
+                    except Exception:
+                        req_raw = req_el.text
+                else:
+                    req_raw = req_el.text
+
+            # Split request into headers + body
+            req_headers = {}
+            req_body    = ''
+            if req_raw:
+                parts = req_raw.split('\r\n\r\n', 1)
+                if len(parts) == 2:
+                    req_body = parts[1]
+                header_lines = parts[0].split('\r\n')[1:]  # skip request line
+                for hl in header_lines:
+                    if ':' in hl:
+                        k, v = hl.split(':', 1)
+                        req_headers[k.strip()] = v.strip()
+
+            # Parse GET params from URL
+            parsed     = urllib.parse.urlparse(url)
+            params_get = dict(urllib.parse.parse_qsl(parsed.query))
+
+            # Parse POST body params
+            params_post      = {}
+            params_body_json = {}
+            ct = req_headers.get('Content-Type', '')
+
+            if req_body:
+                if 'application/x-www-form-urlencoded' in ct:
+                    params_post = dict(urllib.parse.parse_qsl(req_body.strip()))
+                elif 'application/json' in ct or 'text/json' in ct:
+                    try:
+                        import json as _json
+                        parsed_json = _json.loads(req_body.strip())
+                        if isinstance(parsed_json, dict):
+                            # Flatten one level deep
+                            for k, v in parsed_json.items():
+                                if isinstance(v, (str, int, float, bool)):
+                                    params_body_json[k] = str(v)
+                    except Exception:
+                        pass
+                elif 'multipart/form-data' in ct:
+                    # Basic multipart parsing — extract name= fields
+                    for chunk in req_body.split('--'):
+                        if 'Content-Disposition' in chunk and 'name=' in chunk:
+                            try:
+                                name_match = re.search(r'name="([^"]+)"', chunk)
+                                val_parts  = chunk.split('\r\n\r\n', 1)
+                                if name_match and len(val_parts) == 2:
+                                    params_post[name_match.group(1)] = val_parts[1].rstrip('\r\n--')
+                            except Exception:
+                                pass
+
+            items.append({
+                'url':              url,
+                'method':           method,
+                'headers':          req_headers,
+                'body':             req_body,
+                'params_get':       params_get,
+                'params_post':      params_post,
+                'params_body_json': params_body_json,
+            })
+
+        except Exception:
+            continue
+
+    return items
+
+
+def run_scan_from_burp(args):
+    """
+    -b / --burp mode: parse a Burp Suite XML export and scan all
+    GET + POST requests for secrets, XSS, and open redirects.
+
+    Handles:
+    - GET params (from URL query string)
+    - POST form params (application/x-www-form-urlencoded)
+    - POST JSON body params (application/json)
+    - Multipart form fields
+    - Response bodies for secrets via fresh replay
+
+    Output: <domain>-burpscan/ with JSON + HTML report
+    """
+    burp_file = args.burp
+
+    if not os.path.isfile(burp_file):
+        print(f"{R}[!] File not found: {burp_file}{RESET}")
+        sys.exit(1)
+
+    print(f"{C}[*] Parsing Burp XML: {burp_file}...{RESET}")
+    items = parse_burp_xml(burp_file)
+
+    if not items:
+        print(f"{R}[!] No requests found in {burp_file}{RESET}")
+        print(f"{Y}    Make sure you exported from: Proxy → HTTP History → Save items{RESET}")
+        sys.exit(1)
+
+    # Determine primary domain
+    from collections import Counter
+    host_counts    = Counter(urllib.parse.urlparse(x['url']).netloc for x in items)
+    primary_domain = host_counts.most_common(1)[0][0].split(':')[0]
+
+    # Output folder
+    safe_name = re.sub(r'[^\w.\-]', '_', primary_domain)
+    out_dir   = Path(f"{safe_name}-burpscan")
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    ts      = datetime.now().strftime("%Y%m%d_%H%M%S")
+    log     = Logger(out_dir)
+    session = make_session(
+        cookies=args.cookies,
+        headers=dict(h.split(':',1) for h in args.headers) if args.headers else None,
+        proxy=args.proxy
+    )
+
+    banner()
+    get_items  = [x for x in items if x['method'] == 'GET']
+    post_items = [x for x in items if x['method'] != 'GET']
+    print(f"{C}  Mode       :{RESET} {BOLD}{Y}Burp XML Scan (-b){RESET}")
+    print(f"{C}  File       :{RESET} {BOLD}{burp_file}{RESET}")
+    print(f"{C}  Requests   :{RESET} {BOLD}{len(items)} total "
+          f"({len(get_items)} GET, {len(post_items)} POST/other){RESET}")
+    print(f"{C}  Domain     :{RESET} {BOLD}{primary_domain}{RESET}")
+    print(f"{C}  Output dir :{RESET} {BOLD}{out_dir}/{RESET}")
+    print()
+
+    # ── STEP 1: Secret Scanning ───────────────────────────────────────
+    # Two passes:
+    # Pass A — scan the REQUEST bodies directly (secrets hardcoded in POST body)
+    # Pass B — replay each request and scan the RESPONSE body
+    log.section("STEP 1: Secret Scanning (requests + responses)")
+
+    scanner = SecretScanner(log, session, target_domain="")
+
+    # Pass A: scan request bodies and URLs directly — no network needed
+    log.info("Pass A: Scanning request bodies for hardcoded secrets...")
+    for item in items:
+        url = item['url']
+        # Scan URL itself (query string may contain tokens)
+        if item['params_get']:
+            qs_text = '&'.join(f'{k}={v}' for k, v in item['params_get'].items())
+            scanner.scan_content(qs_text, url + ' [query params]', 'text/plain')
+        # Scan POST body
+        if item['body'] and len(item['body']) > 10:
+            scanner.scan_content(item['body'], url + ' [request body]', 'application/json')
+        # Scan parsed POST params
+        if item['params_post']:
+            params_text = '\n'.join(f'{k}={v}' for k, v in item['params_post'].items())
+            scanner.scan_content(params_text, url + ' [post params]', 'text/plain')
+        if item['params_body_json']:
+            import json as _json
+            try:
+                json_text = _json.dumps(item['params_body_json'])
+                scanner.scan_content(json_text, url + ' [json body]', 'application/json')
+            except Exception:
+                pass
+
+    log.info(f"Pass B: Replaying {len(items)} requests to scan responses...")
+
+    def _replay_and_scan(item):
+        try:
+            url     = item['url']
+            method  = item['method']
+            body    = item['body'] or None
+            # Strip hop-by-hop headers that break replayed requests
+            skip_headers = {
+                'host', 'content-length', 'transfer-encoding',
+                'connection', 'keep-alive', 'proxy-authenticate',
+                'proxy-authorization', 'te', 'trailers', 'upgrade',
+            }
+            headers = {k: v for k, v in item['headers'].items()
+                       if k.lower() not in skip_headers}
+
+            ct = item['headers'].get('Content-Type', item['headers'].get('content-type', ''))
+
+            if method == 'GET':
+                r = session.get(url, headers=headers, timeout=15)
+            elif method == 'POST':
+                if 'application/json' in ct:
+                    # Send as raw JSON body preserving Content-Type
+                    r = session.post(url, data=body,
+                                     headers=headers, timeout=15)
+                elif 'application/x-www-form-urlencoded' in ct:
+                    r = session.post(url,
+                                     data=item['params_post'] or body,
+                                     headers=headers, timeout=15)
+                elif 'multipart/form-data' in ct:
+                    # Send raw body for multipart — don't try to re-encode
+                    r = session.post(url, data=body,
+                                     headers=headers, timeout=15)
+                else:
+                    r = session.post(url, data=body or item['params_post'],
+                                     headers=headers, timeout=15)
+            else:
+                r = session.request(method, url, data=body,
+                                    headers=headers, timeout=15)
+
+            # Accept any response that has a body — not just 200
+            # Secrets appear in 200, 201, 302 redirects, 401/403 error pages, etc.
+            if r.text and len(r.text) > 30:
+                ct_resp = r.headers.get('Content-Type', '')
+                # Skip binary responses
+                if not any(x in ct_resp.lower() for x in (
+                    'image/', 'video/', 'audio/', 'font/',
+                    'application/zip', 'application/pdf',
+                    'application/octet-stream',
+                )):
+                    scanner.scan_content(r.text, url + f' [response {r.status_code}]', ct_resp)
+
+        except Exception:
+            pass
+
+    with ThreadPoolExecutor(max_workers=args.workers) as ex:
+        futs = [ex.submit(_replay_and_scan, item) for item in items]
+        done = 0
+        for fut in as_completed(futs):
+            done += 1
+            if done % 50 == 0:
+                pct = int(done / len(items) * 100)
+                log.info(f"Progress: {done}/{len(items)} ({pct}%) responses scanned...")
+
+    # ── STEP 2: XSS Scanning ─────────────────────────────────────────
+    if not args.no_xss:
+        log.section("STEP 2: XSS Scanning (GET + POST params)")
+
+        # Collect all GET URLs with params for standard XSS testing
+        get_urls = [x['url'] for x in get_items
+                    if x['params_get'] and is_in_scope(x['url'], primary_domain)]
+
+        # Deduplicate GET URLs
+        get_urls = list(dict.fromkeys(get_urls))
+
+        xss = XSSScanner(log, session, target_domain="")
+        xss.target_domain = ""
+
+        # Standard GET param XSS
+        if get_urls:
+            log.info(f"Testing {len(get_urls)} GET URLs for XSS...")
+            xss.scan_urls(get_urls[:1000], workers=args.workers)
+
+        # POST param XSS — inject into each body param
+        post_xss_count = 0
+        for item in post_items:
+            all_post_params = {**item['params_post'], **item['params_body_json']}
+            if not all_post_params:
+                continue
+            url = item['url']
+            ct  = item['headers'].get('Content-Type', '')
+
+            for param, original_val in all_post_params.items():
+                canary = "SHXSS" + re.sub(r'[^A-Za-z0-9]', '', __import__('uuid').uuid4().hex)[:10]
+
+                # Phase 1: check reflection with canary
+                try:
+                    test_params = dict(all_post_params)
+                    test_params[param] = canary
+                    if 'application/json' in ct:
+                        import json as _json
+                        r1 = session.post(url, json=test_params, timeout=10)
+                    else:
+                        r1 = session.post(url, data=test_params, timeout=10)
+
+                    if canary not in r1.text:
+                        continue  # not reflected
+
+                    # Phase 2 + 3: detect context and try payloads
+                    ctx = _detect_context(r1.text, canary)
+                    if ctx is None:
+                        continue
+
+                    for payload, pattern in _payloads_for_context(ctx, canary):
+                        test_params[param] = payload
+                        try:
+                            if 'application/json' in ct:
+                                r2 = session.post(url, json=test_params, timeout=10)
+                            else:
+                                r2 = session.post(url, data=test_params, timeout=10)
+
+                            if not re.search(pattern, r2.text, re.I):
+                                continue
+
+                            # FP checks
+                            if ctx in ("attr_double","attr_single","attr_unquoted"):
+                                if payload not in r2.text and _html_encode(payload) in r2.text:
+                                    continue
+                            if ctx == "js_code":
+                                m_p = re.search(re.escape(payload[:15]), r2.text)
+                                if m_p:
+                                    before_p = r2.text[max(0,m_p.start()-30):m_p.start()]
+                                    if re.search(r'["\'`]\s*$', before_p):
+                                        continue
+
+                            log.vuln(
+                                "Reflected XSS (POST)", url, param,
+                                f"POST param | Context: {ctx} | Method: {item['method']}",
+                                f"PoC: POST {url} — {param}={payload[:60]}"
+                            )
+                            post_xss_count += 1
+                            break  # one hit per param
+                        except Exception:
+                            continue
+                except Exception:
+                    continue
+
+        if post_xss_count:
+            log.info(f"Found {post_xss_count} XSS in POST params")
+
+    # ── STEP 3: Open Redirect Scanning ───────────────────────────────
+    if not args.no_redirect:
+        log.section("STEP 3: Open Redirect Scanning")
+        redir_urls = list(dict.fromkeys(
+            x['url'] for x in get_items if x['params_get']
+        ))
+        if redir_urls:
+            redir = RedirectScanner(log, session, primary_domain)
+            redir.target = ""
+            redir.scan_urls(redir_urls[:500], workers=args.workers)
+
+    # ── STEP 4: Information Disclosure ────────────────────────────────
+    if not getattr(args, 'no_info', False):
+        id_scanner = InfoDisclosureScanner(log, session)
+        id_scanner.probe_paths(primary_domain, workers=args.workers)
+
+    # ── Summary ───────────────────────────────────────────────────────
+    log.section("SCAN COMPLETE — BURP MODE")
+    ns = len(log.findings)
+    nx = len(log.xss)
+    nr = len(log.redirs)
+    ni = len(log.info_disc)
+
+    if ns == nx == nr == ni == 0:
+        print(f"{G}  Nothing found{RESET}")
+    else:
+        if ns:
+            print(f"{R}{BOLD}  🔑 {ns} secret(s){RESET}")
+            by_sev = {}
+            for f in log.findings:
+                by_sev[f['severity']] = by_sev.get(f['severity'], 0) + 1
+            for sev in ["CRITICAL","HIGH","MEDIUM","LOW","INFO"]:
+                if sev in by_sev:
+                    print(f"     {SEV_COLOR[sev]}[{sev}]{RESET} {by_sev[sev]}")
+        if nx: print(f"{R}{BOLD}  ⚡ {nx} XSS finding(s){RESET}")
+        if nr: print(f"{BR}{BOLD}  ↩  {nr} open redirect(s){RESET}")
+        if ni: print(f"{Y}{BOLD}  🔍 {ni} information disclosure finding(s){RESET}")
+
+    print(f"\n  {DIM}Requests processed: {len(items)}{RESET}")
+    print(f"  {DIM}GET: {len(get_items)}  POST/other: {len(post_items)}{RESET}")
+    print(f"  {DIM}Output dir: {out_dir}/{RESET}")
+    log.save(primary_domain, ts)
+    print(f"\n{M}{BOLD}  Done! 🎯{RESET}\n")
+
+
+
 def main():
     p = argparse.ArgumentParser(
         description=f"HackLens v{VERSION} — Web Recon & Vulnerability Scanner",
@@ -2819,14 +3278,17 @@ Examples:
   # Deep scan with subdomain enumeration
   python3 hacklens.py -d example.com --deep --subs
 
-  # Use pre-crawled URL list (skip recon, go straight to scanning)
-  python3 hacklens.py -d example.com -l crawled_urls.txt
+  # Pre-crawled URL list (skip recon)
+  python3 hacklens.py -l crawled_urls.txt
 
-  # Authenticated scan through Burp
+  # Burp Suite XML export (GET + POST requests)
+  python3 hacklens.py -b burp_export.xml
+
+  # Authenticated scan through Burp proxy
   python3 hacklens.py -d example.com -c "session=abc" -p http://127.0.0.1:8080
         """
     )
-    # Target — one of -d or -l is required
+    # Target — one of -d, -l, or -b is required
     target_group = p.add_mutually_exclusive_group(required=True)
     target_group.add_argument(
         "-d", "--domain",
@@ -2835,8 +3297,12 @@ Examples:
     target_group.add_argument(
         "-l", "--list",
         metavar="FILE",
-        help="Pre-crawled URL list file — skips recon/crawling, "
-             "directly scans all URLs for secrets, XSS, redirects"
+        help="Pre-crawled URL list file — skips recon, scans for secrets/XSS/redirects"
+    )
+    target_group.add_argument(
+        "-b", "--burp",
+        metavar="FILE",
+        help="Burp Suite XML export — scans GET + POST requests (Proxy → HTTP History → Save items)"
     )
 
     p.add_argument("--deep",        action="store_true", help="Use Wayback, GAU, extra sources (with -d)")
@@ -2855,6 +3321,8 @@ Examples:
     args = p.parse_args()
     if args.list:
         run_scan_from_list(args)
+    elif args.burp:
+        run_scan_from_burp(args)
     else:
         run_scan(args)
 
