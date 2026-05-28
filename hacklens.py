@@ -1362,7 +1362,7 @@ class RedirectScanner:
         """
         Returns True if evil.com appears ONLY as a query parameter value,
         not as the actual host. This is the core FP check.
-        e.g. https://gcore.com/login?return=https://evil.com → True (FP)
+        e.g. https://app.target.com/login?return=https://evil.com → True (FP)
              https://evil.com/malicious                      → False (real)
         """
         parsed = urllib.parse.urlparse(url)
@@ -1388,7 +1388,7 @@ class RedirectScanner:
         """True if this is a known domain alias/migration, not a vuln."""
         from_root = self._root_domain(from_host)
         to_root   = self._root_domain(to_host)
-        # Same root domain (gcorelabs.com → gcore.com are DIFFERENT roots)
+        # Same root domain (app.target.com → target.com are SAME root)
         # Only flag known pairs
         for a, b in self._BENIGN_PAIRS:
             if from_root == a and to_root == b:
@@ -1406,9 +1406,9 @@ class RedirectScanner:
         CONFIRMED: Location header HOST is evil.com
         SKIP:      Location header HOST is anything else (even if query contains evil.com)
 
-        This eliminates 100% of the gcorelabs→gcore FP pattern because:
-          Location: https://gcore.com/login?return=https://evil.com
-          → host = gcore.com (NOT evil.com) → SKIP
+        This eliminates domain-alias FP patterns because:
+          Location: https://app.target.com/login?return=https://evil.com
+          → host = app.target.com (NOT evil.com) → SKIP
         """
         if r.status_code not in (301, 302, 303, 307, 308):
             return False
@@ -2843,7 +2843,18 @@ def collect_subdomains(domain, log, session, out_dir=None):
     ]
     for tool, cmd, timeout in tool_configs:
         results = _run(cmd, log, tool, timeout=timeout)
-        subs.update(r.strip() for r in results if domain in r)
+        for r in results:
+            r = r.strip()
+            if not r or domain not in r:
+                continue
+            # Strip scheme if tool returns full URLs (e.g. http://sub.domain.com)
+            r = r.replace("https://","").replace("http://","").rstrip("/")
+            # Strip port
+            r = r.split(":")[0]
+            # Strip wildcard prefix
+            r = r.lstrip("*.")
+            if domain in r:
+                subs.add(r.lower())
 
     # ── MassDNS bruteforce (if installed) ───────────────────────────────
     # massdns does DNS brute-force using a wordlist — finds subdomains
@@ -2887,11 +2898,29 @@ def collect_subdomains(domain, log, session, out_dir=None):
     else:
         log.info("MassDNS not installed — skipping bruteforce (optional, install for more coverage)")
 
-    # ── Filter & Save ─────────────────────────────────────────────────────
-
-    # Remove wildcards, empties, and non-subdomains
-    subs = {s.strip().lstrip("*.") for s in subs
-            if s and domain in s and s != domain}
+    # ── Normalize & Filter ────────────────────────────────────────────────
+    # Normalize all collected subdomains:
+    # - strip wildcards, schemes, ports, whitespace
+    # - lowercase
+    # - remove bare domain itself
+    # - remove anything that doesn't belong to target domain
+    normalized = set()
+    for s in subs:
+        s = s.strip()
+        if not s:
+            continue
+        # Strip scheme
+        s = s.replace("https://","").replace("http://","").rstrip("/")
+        # Strip port
+        s = s.split(":")[0]
+        # Strip wildcard/dot prefix
+        s = s.lstrip("*.")
+        # Lowercase
+        s = s.lower()
+        # Must contain target domain and not be the bare domain itself
+        if s and domain in s and s != domain:
+            normalized.add(s)
+    subs = normalized
 
     log.success(f"Total unique subdomains: {len(subs)}")
 
@@ -2945,8 +2974,8 @@ def collect_subdomains(domain, log, session, out_dir=None):
             f.write("\n".join(sorted(subs)) + "\n")
         log.success(f"All subdomains saved → {sub_file} ({len(subs)} total)")
 
-        # Save alive subdomains separately
-        if alive_subs and len(alive_subs) != len(subs):
+        # Always save alive subdomains when httpx ran successfully
+        if alive_subs:
             alive_file = Path(out_dir) / "alive_subdomains.txt"
             with open(alive_file, "w") as f:
                 f.write("\n".join(sorted(alive_subs)) + "\n")
