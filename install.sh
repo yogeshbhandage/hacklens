@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ╔══════════════════════════════════════════════════════════════════════╗
-# ║   HackLens v2.0 — Web Recon & Vulnerability Scanner                  ║
+# ║   HackLens v3.0.0 — Web Recon & Vulnerability Scanner                ║
 # ║   Created by Yogesh Bhandage | yogeshbhandage.com                    ║
 # ║   ⚠  For Authorized Security Testing Only                            ║
 # ╚══════════════════════════════════════════════════════════════════════╝
@@ -25,7 +25,7 @@ cat << 'BANNER'
   ██║  ██║██║  ██║╚██████╗██║  ██╗███████╗███████╗██║ ╚████║███████║
   ╚═╝  ╚═╝╚═╝  ╚═╝ ╚═════╝╚═╝  ╚═╝╚══════╝╚══════╝╚═╝  ╚═══╝╚══════╝
 BANNER
-echo -e "${RESET}${CYAN}  v2.1 Installer | Created by Yogesh Bhandage | yogeshbhandage.com${RESET}\n"
+echo -e "${RESET}${CYAN}  v3.0.0 Installer | Created by Yogesh Bhandage | yogeshbhandage.com${RESET}\n"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
@@ -67,7 +67,7 @@ install_system_deps() {
 setup_python() {
     section "Python Virtual Environment"
     VENV_DIR="$SCRIPT_DIR/venv"
-    [ ! -d "$VENV_DIR" ] && python3 -m venv "$VENV_DIR" && info "venv created"
+    [ ! -d "$VENV_DIR" ] && python3 -m venv "$VENV_DIR"
     source "$VENV_DIR/bin/activate"
     "$VENV_DIR/bin/pip3" install --upgrade pip -q
     info "Installing Python packages..."
@@ -110,54 +110,30 @@ install_go_tool() {
     GOPATH="$HOME/go" go install "$pkg" 2>/dev/null \
         && { sudo cp -f "$HOME/go/bin/$name" /usr/local/bin/ 2>/dev/null || true
              command -v "$name" &>/dev/null && success "$name ✓" || warn "$name — needs: source ~/.bashrc"; } \
-        || warn "$name — failed (tool will be gracefully skipped)"
+        || warn "$name — failed (will be gracefully skipped)"
 }
 
-install_subdomain_api_check() {
-    # ── Subdomain Sources Summary ─────────────────────────────────────────
-    # HackLens uses 10+ subdomain sources. Here's what needs installation:
-    #
-    # NO INSTALL REQUIRED (pure HTTP API calls inside hacklens.py):
-    #   ✓ crt.sh         — certificate transparency logs
-    #   ✓ HackerTarget   — passive DNS API
-    #   ✓ RapidDNS       — DNS search
-    #   ✓ AlienVault OTX — threat intelligence
-    #   ✓ URLScan.io     — web scan history
-    #   ✓ ThreatCrowd    — threat intelligence
-    #   ✓ DNSDumpster    — DNS recon (scraped)
-    #
-    # REQUIRES TOOL INSTALL (handled below):
-    #   → Subfinder      — go install
-    #   → Assetfinder    — go install
-    #   → Amass          — apt / snap / go install
-    #   → Chaos          — go install + API key needed
-    #   → MassDNS        — compiled from source (optional, for bruteforce)
-    #   → httpx          — go install (alive check after enumeration)
-    # ─────────────────────────────────────────────────────────────────────
-    section "Subdomain Sources"
-    echo -e "  ${GREEN}API sources (no install needed):${RESET}"
-    echo -e "  ${CYAN}✓${RESET} crt.sh, HackerTarget, RapidDNS, AlienVault OTX,"
-    echo -e "  ${CYAN}✓${RESET} URLScan.io, ThreatCrowd, DNSDumpster"
-    echo -e ""
-    echo -e "  ${GREEN}Tool-based sources (installing below):${RESET}"
-    echo -e "  ${CYAN}→${RESET} Subfinder, Assetfinder, Amass, Chaos, MassDNS, httpx"
+install_subdomain_tools() {
+    section "Subdomain Enumeration Tools"
+    # API sources (no install needed):
+    echo -e "  ${CYAN}API sources (no install):${RESET} crt.sh, HackerTarget, RapidDNS,"
+    echo -e "  AlienVault OTX, URLScan.io, ThreatCrowd, Certspotter, Wayback CDX, DNSDumpster"
+    echo ""
+    echo -e "  ${CYAN}Installing tool-based sources:${RESET}"
+    install_go_tool "subfinder"   "github.com/projectdiscovery/subfinder/v2/cmd/subfinder@latest"
+    install_go_tool "assetfinder" "github.com/tomnomnom/assetfinder@latest"
+    install_go_tool "httpx"       "github.com/projectdiscovery/httpx/cmd/httpx@latest"
 }
 
 install_go_tools() {
     section "Go Recon Tools"
     export GOPATH="$HOME/go"; export PATH="$PATH:$GOPATH/bin:/usr/local/go/bin"
-    # JS & URL collection
     install_go_tool "katana"      "github.com/projectdiscovery/katana/cmd/katana@latest"
     install_go_tool "gau"         "github.com/lc/gau/v2/cmd/gau@latest"
     install_go_tool "hakrawler"   "github.com/hakluke/hakrawler@latest"
     install_go_tool "subjs"       "github.com/lc/subjs@latest"
     install_go_tool "waybackurls" "github.com/tomnomnom/waybackurls@latest"
-    # Subdomain
-    install_go_tool "subfinder"   "github.com/projectdiscovery/subfinder/v2/cmd/subfinder@latest"
-    install_go_tool "assetfinder" "github.com/tomnomnom/assetfinder@latest"
-    install_go_tool "httpx"       "github.com/projectdiscovery/httpx/cmd/httpx@latest"
     install_go_tool "httprobe"    "github.com/tomnomnom/httprobe@latest"
-    # Vuln
     install_go_tool "nuclei"      "github.com/projectdiscovery/nuclei/v3/cmd/nuclei@latest"
     success "Go tools done"
 }
@@ -186,7 +162,7 @@ install_trufflehog() {
     curl -sSfL https://raw.githubusercontent.com/trufflesecurity/trufflehog/main/scripts/install.sh \
         | sh -s -- -b /usr/local/bin 2>/dev/null \
         && success "TruffleHog ✓" \
-        || warn "TruffleHog failed — manual install: https://github.com/trufflesecurity/trufflehog"
+        || warn "TruffleHog failed — manual: https://github.com/trufflesecurity/trufflehog"
 }
 
 install_massdns() {
@@ -200,16 +176,15 @@ install_massdns() {
         cd / && rm -rf /tmp/massdns_build
         command -v massdns &>/dev/null && success "MassDNS ✓" || warn "MassDNS build failed"
     else
-        warn "MassDNS skipped — needs gcc & make (apt install build-essential)"
+        warn "MassDNS skipped — needs gcc & make"
     fi
 }
 
 install_seclists() {
-    section "SecLists Wordlists"
+    section "SecLists (for MassDNS)"
     [ -d "/usr/share/seclists" ] && { success "SecLists already installed"; return; }
     command -v apt-get &>/dev/null \
         && sudo apt-get install -y seclists 2>/dev/null && success "SecLists ✓" && return
-    info "Downloading DNS wordlist..."
     sudo mkdir -p /usr/share/seclists/Discovery/DNS/
     sudo curl -sL "https://raw.githubusercontent.com/danielmiessler/SecLists/master/Discovery/DNS/subdomains-top1million-5000.txt" \
         -o /usr/share/seclists/Discovery/DNS/subdomains-top1million-5000.txt 2>/dev/null \
@@ -230,7 +205,7 @@ create_runner() {
     section "Creating run.sh"
     cat > "$SCRIPT_DIR/run.sh" << 'EOF'
 #!/usr/bin/env bash
-# HackLens v2.0 | yogeshbhandage.com
+# HackLens v3.0.0 | yogeshbhandage.com
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PYTHON="$SCRIPT_DIR/venv/bin/python3"
 export GOPATH="$HOME/go"
@@ -248,7 +223,7 @@ verify() {
     VENV="$SCRIPT_DIR/venv"
     [[ -f "$VENV/bin/python3" ]] && {
         "$VENV/bin/python3" -c "import requests,jsbeautifier,bs4,colorama; print('[+] Python packages OK')" 2>/dev/null \
-            || echo "[-] Python packages — re-run install.sh"
+            || echo "[-] Python packages failed"
         "$VENV/bin/python3" "$SCRIPT_DIR/hacklens.py" --version 2>/dev/null || true
     }
     echo ""
@@ -271,18 +246,21 @@ verify() {
 print_usage() {
     echo ""
     echo -e "${GREEN}${BOLD}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${RESET}"
-    echo -e "${GREEN}${BOLD}  HackLens v2.0 ready!${RESET}"
+    echo -e "${GREEN}${BOLD}  HackLens v3.0.0 ready!${RESET}"
     echo ""
     echo -e "  ${YELLOW}source ~/.bashrc${RESET}"
     echo ""
-    echo -e "  ${CYAN}# Auto-crawl + scan:${RESET}"
+    echo -e "  ${CYAN}Deep scan + subdomains:${RESET}"
     echo -e "  bash run.sh -d target.com --deep --subs"
     echo ""
-    echo -e "  ${CYAN}# Pre-crawled URL list (skip recon):${RESET}"
-    echo -e "  bash run.sh -d target.com -l urls.txt"
+    echo -e "  ${CYAN}With SSTI + CI:${RESET}"
+    echo -e "  bash run.sh -d target.com --deep --subs --ssti --ci"
     echo ""
-    echo -e "  ${CYAN}# Check version:${RESET}"
-    echo -e "  bash run.sh --version"
+    echo -e "  ${CYAN}Burp XML export:${RESET}"
+    echo -e "  bash run.sh -b burp_export.xml"
+    echo ""
+    echo -e "  ${CYAN}Pre-crawled list:${RESET}"
+    echo -e "  bash run.sh -l urls.txt --ssti --ci"
     echo ""
     echo -e "  ${RED}⚠  Authorized testing only! | yogeshbhandage.com${RESET}"
     echo -e "${GREEN}${BOLD}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${RESET}\n"
@@ -290,9 +268,8 @@ print_usage() {
 
 main() {
     detect_os; install_system_deps; setup_python; setup_go
-    install_subdomain_api_check
-    install_go_tools; install_chaos; install_amass; install_trufflehog
-    install_massdns; install_seclists; copy_go_bins; create_runner
-    verify; print_usage
+    install_subdomain_tools; install_go_tools; install_chaos
+    install_amass; install_trufflehog; install_massdns; install_seclists
+    copy_go_bins; create_runner; verify; print_usage
 }
 main "$@"
