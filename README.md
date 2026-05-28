@@ -1,71 +1,129 @@
 <p align="center">
-  <img src="logo.png" alt="HackLens Logo" width="380"/>
+  <img src="logo.png" alt="HackLens Logo" width="400"/>
 </p>
 
 <h1 align="center">HackLens</h1>
-<p align="center"><b>Web Recon & Vulnerability Scanner for Bug Bounty Hunters</b></p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/Version-2.1.0-brightgreen?style=flat-square"/>
-  <img src="https://img.shields.io/badge/Python-3.8%2B-blue?style=flat-square"/>
-  <img src="https://img.shields.io/badge/Patterns-240%2B-red?style=flat-square"/>
-  <img src="https://img.shields.io/badge/Platform-Linux%20%7C%20Kali%20%7C%20macOS-lightgrey?style=flat-square"/>
-  <img src="https://img.shields.io/badge/License-MIT-green?style=flat-square"/>
+  <b>Automated Web Recon & Vulnerability Scanner for Bug Bounty Hunters</b>
 </p>
 
 <p align="center">
-  Created by <a href="https://yogeshbhandage.com"><b>Yogesh Bhandage</b></a> | <a href="https://yogeshbhandage.com">yogeshbhandage.com</a><br/>
-  <i>Built with AI using original ideas by the author</i>
+  <img src="https://img.shields.io/badge/Version-3.0.0-brightgreen?style=flat-square"/>
+  <img src="https://img.shields.io/badge/Python-3.8%2B-blue?style=flat-square&logo=python"/>
+  <img src="https://img.shields.io/badge/Patterns-240%2B-red?style=flat-square"/>
+  <img src="https://img.shields.io/badge/Platform-Linux%20%7C%20Kali%20%7C%20macOS-lightgrey?style=flat-square"/>
+  <img src="https://img.shields.io/badge/License-MIT-green?style=flat-square"/>
+  <img src="https://img.shields.io/badge/Built%20with-AI-purple?style=flat-square"/>
+</p>
+
+<p align="center">
+  Created by <a href="https://yogeshbhandage.com"><b>Yogesh Bhandage</b></a>
+  &nbsp;|&nbsp;
+  <a href="https://yogeshbhandage.com">yogeshbhandage.com</a>
 </p>
 
 ---
 
 ## ⚠️ Disclaimer
 
-> **For authorized security testing only.** Only use against targets you have explicit written permission to test. Unauthorized use is illegal.
+> **HackLens is for authorized security testing only.**
+> Only use against targets you have **explicit written permission** to test — bug bounty programs, your own applications, or intentional practice environments.
+> Unauthorized use is **illegal**. The author assumes no responsibility for misuse.
 
 ---
 
-## What Is HackLens?
+## Table of Contents
 
-One command. Full recon. Automated vulnerability detection.
+- [About](#about)
+- [Features](#features)
+- [Installation](#installation)
+- [Usage](#usage)
+- [Scan Modes](#scan-modes)
+- [All Flags](#flags)
+- [Secret Detection](#secrets)
+- [XSS Detection](#xss)
+- [Open Redirect](#redirect)
+- [Information Disclosure](#infodisclosure)
+- [SSTI Detection](#ssti)
+- [Command Injection](#ci)
+- [Subdomain Enumeration](#subdomains)
+- [Output Files](#output)
+- [Updating](#updating)
+- [Roadmap](#roadmap)
+
+---
+
+## About {#about}
+
+HackLens is a fully automated web reconnaissance and vulnerability scanning tool built for bug bounty hunters and security researchers.
+
+**You give it a domain — it does everything.**
 
 ```
 bash run.sh -d target.com --deep --subs
 ```
 
 ```
-Domain Input
-  ├── Subdomain Enumeration   (10+ sources)
-  ├── Alive Check             (httpx)
-  ├── JS & URL Collection     (7 tools)
-  ├── Secret Scanning         (240+ patterns)
-  ├── Reflected XSS           (3-phase, 26 payloads, 8 contexts)
-  ├── Open Redirect           (3-layer, 13 bypass probes)
-  └── Information Disclosure  (70+ probes, 20+ response patterns)
+  Domain
+    │
+    ├── Subdomain Enumeration ──── 12+ sources (crt.sh, HackerTarget, Subfinder,
+    │                               Assetfinder, Amass, Chaos, Certspotter, Wayback...)
+    │
+    ├── Alive Check ─────────────── httpx (filters dead subdomains)
+    │
+    ├── JS & URL Collection ──────── 7 tools (Katana, GAU, Hakrawler, SubJS,
+    │                                Wayback Machine, waybackurls, direct crawl)
+    │
+    ├── Secret Scanning ──────────── 240+ regex patterns across JS files, HTML,
+    │                                JSON APIs, .env, config, source maps
+    │
+    ├── Reflected XSS ───────────── 3-phase: canary → context detection → payload
+    │                                26 payloads, 8 contexts, zero FP design
+    │
+    ├── Open Redirect ───────────── 3-layer detection, 13 bypass probes
+    │                                evil.com must be destination HOST
+    │
+    ├── Information Disclosure ───── 70+ probe paths, 20+ response patterns
+    │                                Debug mode, stack traces, Spring Boot, Git...
+    │
+    ├── SSTI ─────────────────────── 6 engine formats, triple math verification
+    │                                Jinja2, Twig, Freemarker, ERB, Spring EL
+    │
+    └── Command Injection ────────── Output-based + double-verified time-based
+                                     12 separators, OOB interactsh support
 ```
 
-Or skip recon with a pre-crawled URL list:
-
-```
-bash run.sh -l urls.txt
-```
+> *Built with AI using original ideas by Yogesh Bhandage*
 
 ---
 
-## What's New in v2.1
+## Features {#features}
 
-- **240+ secret patterns** — merged all patterns from Burp extension (camelCase variants, JS object patterns, OAuth tokens, AWS Session Token, Google OAuth, Databricks, Kubernetes, Terraform, `.env`/`.git` file exposure, and 50+ more)
-- **Information Disclosure scanner** — 70+ probe paths, 20+ response patterns detecting debug mode, stack traces, Spring Boot Actuator, phpinfo, directory listing, Git exposure, SQL errors, API docs, backup files
-- **`--no-info` flag** — skip info disclosure scanning
-- **`-l` / `--list` mode fixed** — properly splits JS vs parameterised URLs, no scope filter, outputs to `<domain>-urlscan/` folder
-- **26 XSS payloads across 8 contexts** — script tag injection, single/double quote breakout, js_code separators, svg, details, input autofocus
-- **`XSS_REFLECT_PARAMS`** — 50+ known reflection parameter names tested first
-- **`--version` flag**
+| Feature | Details |
+|---------|---------|
+| 🔑 **Secret Detection** | 240+ patterns — AWS, Stripe, GitHub, OpenAI, DB credentials, private keys, and more |
+| ⚡ **Reflected XSS** | 3-phase zero-FP design — canary reflection, context detection, context-specific payloads |
+| ↩ **Open Redirect** | 3-layer detection — Location header, JS sinks, redirect chain |
+| 🔍 **Info Disclosure** | 70+ probe paths — debug pages, stack traces, actuator endpoints, backup files |
+| 💉 **SSTI** | Triple-verified math probes across 6 template engine formats |
+| 🖥 **Command Injection** | Output-based + time-based (double-verified) + OOB interactsh |
+| 🌐 **Subdomain Enum** | 12+ sources — no API keys needed for most |
+| 🗂 **3 Scan Modes** | Auto recon (`-d`), URL list (`-l`), Burp XML (`-b`) |
+| 🎯 **Scope Enforcement** | Only scans target domain and subdomains |
+| 📊 **Reports** | JSON + HTML report per scan |
+| 🔧 **Memory Safe** | Chunked scanning — handles 20MB+ JS files without OOM |
 
 ---
 
-## Installation
+## Installation {#installation}
+
+### Requirements
+- Python 3.8+
+- Go 1.18+
+- Linux or macOS (Kali Linux recommended)
+
+### One-Command Install
 
 ```bash
 git clone https://github.com/yogeshbhandage/HackLens.git
@@ -74,168 +132,249 @@ bash install.sh
 source ~/.bashrc
 ```
 
-To update:
+The installer handles everything:
+- Python virtual environment + packages
+- Go environment setup
+- All recon tools (Katana, GAU, Subfinder, Assetfinder, Amass, httpx, etc.)
+- MassDNS + SecLists wordlist (optional, for subdomain bruteforce)
 
+If any tools show ✗ after install:
 ```bash
-bash update.sh
-source ~/.bashrc
+source ~/.bashrc      # fix PATH first
+bash install.sh       # re-run is safe — skips already installed tools
 ```
 
 ---
 
-## Usage
+## Usage {#usage}
 
-### Mode 1 — Auto Recon (`-d`)
+### Quick Start
 
 ```bash
-# Standard scan
-bash run.sh -d target.com
-
-# Deep + subdomains (recommended)
+# Full scan — subdomains + deep crawl + all vuln types
 bash run.sh -d target.com --deep --subs
 
-# Authenticated
-bash run.sh -d target.com -c "session=abc123; csrf=xyz"
+# Authenticated scan
+bash run.sh -d target.com --deep --subs -c "session=abc123; csrf=xyz"
 
-# Through Burp Suite
+# Through Burp Suite proxy
 bash run.sh -d target.com -p http://127.0.0.1:8080
 
-# Secrets only
+# Include SSTI and command injection
+bash run.sh -d target.com --deep --subs --ssti --ci
+
+# Secrets only — fast mode
 bash run.sh -d target.com --no-xss --no-redirect --no-info
 ```
 
+---
+
+## Scan Modes {#scan-modes}
+
+### Mode 1 — Auto Recon (`-d`)
+
+Discovers everything automatically. Give it a domain and walk away.
+
+```bash
+bash run.sh -d target.com
+bash run.sh -d target.com --deep --subs
+bash run.sh -d target.com --deep --subs --ssti --ci --ci-server your.interactsh.server
+```
+
+**`--deep`** enables: Wayback Machine, GAU, waybackurls — and automatically enables SSTI + CI scanning.
+
+**`--subs`** enables: subdomain enumeration from 12+ sources + httpx alive check.
+
+**Output folder:** `target.com/`
+
+---
+
 ### Mode 2 — Pre-Crawled URL List (`-l`)
 
-Skip all recon — feed HackLens a URL list you already have.
+Skip all recon — scan a URL list you already have. Useful for Burp history, authenticated sessions, or re-scanning with updated patterns.
 
 ```bash
 bash run.sh -l urls.txt
-```
-
-**When to use `-l`:**
-- You have a Burp Suite HTTP history export (URLs only)
-- You ran your own crawler and saved URLs
-- Target blocks automated crawlers but you have authenticated URLs
-- Re-scanning with updated patterns
-
-**Prepare a URL list:**
-
-```bash
-katana -u https://target.com -jc -silent > urls.txt
-gau target.com >> urls.txt
+bash run.sh -l urls.txt --ssti --ci
 bash run.sh -l urls.txt -c "session=abc123"
 ```
 
-**Output:** `<domain>-urlscan/` folder with JSON + HTML only
+**How to prepare a URL list:**
+```bash
+# From your own crawl
+katana -u https://target.com -jc -silent > urls.txt
+gau target.com >> urls.txt
+waybackurls target.com >> urls.txt
+
+# Then scan
+bash run.sh -l urls.txt
+```
+
+**What it does:**
+1. Splits URLs — JS files, parameterised pages, plain pages
+2. Scans all URLs for secrets
+3. Tests parameterised URLs for XSS and open redirects
+4. Probes known-sensitive paths for info disclosure
+5. Tests all params for SSTI and command injection (if `--ssti`/`--ci`)
+
+**Output folder:** `<domain>-urlscan/` — JSON + HTML report only
+
+---
 
 ### Mode 3 — Burp XML Export (`-b`)
 
-Feed a full Burp Suite XML export — includes GET params AND POST request bodies.
-
-```bash
-bash run.sh -b burp_export.xml
-```
+Feed a full Burp Suite HTTP history export — handles GET and POST requests including request bodies.
 
 **How to export from Burp:**
 ```
 Proxy → HTTP History → Select all → Right click → Save items → burp_export.xml
 ```
 
-**What `-b` does that `-l` cannot:**
-- **Pass A** — scans request bodies directly (no network): URL query params, POST form data, JSON body, multipart fields
-- **Pass B** — replays every request and scans the response body for secrets
-- Scans ALL response status codes: 200, 201, 301, 302, 400, 401, 403, 404, 500
-- Tests POST body params for XSS (form data, JSON body, multipart)
-- Tests GET params for XSS and open redirect
-- Handles `application/x-www-form-urlencoded`, `application/json`, `multipart/form-data`
-- Finding source shows status code: `[response 401]`, `[response 403]` etc.
-
-**Output:** `<domain>-burpscan/` folder with JSON + HTML only
-
 ```bash
-# With authentication cookies
+bash run.sh -b burp_export.xml
 bash run.sh -b burp_export.xml -c "session=abc123"
-
-# Through Burp proxy to verify traffic
-bash run.sh -b burp_export.xml -p http://127.0.0.1:8080
-
-# Secrets only (skip active testing)
-bash run.sh -b burp_export.xml --no-xss --no-redirect --no-info
+bash run.sh -b burp_export.xml --ssti --ci
 ```
 
-> `-d`, `-l`, and `-b` are mutually exclusive — use one at a time.
+**What it does beyond `-l`:**
+- **Pass A** — scans request bodies directly (query params, POST form data, JSON body, multipart fields)
+- **Pass B** — replays every request and scans responses — ALL status codes (200, 201, 401, 403, 500 etc.)
+- Tests POST body parameters for XSS (form-encoded, JSON, multipart)
+- Handles `application/x-www-form-urlencoded`, `application/json`, `multipart/form-data`
+
+**Output folder:** `<domain>-burpscan/` — JSON + HTML report only
+
+> **Note:** `-d`, `-l`, and `-b` are mutually exclusive — use one per scan.
 
 ---
 
-## All Flags
+## All Flags {#flags}
 
 | Flag | Description | Mode |
 |------|-------------|------|
-| `-d, --domain DOMAIN` | Target domain | Auto |
-| `-l, --list FILE` | Pre-crawled URL list | List |
-| `-b, --burp FILE` | Burp Suite XML export (GET + POST) | Burp |
-| `--deep` | Wayback Machine, GAU, waybackurls | Auto |
-| `--subs` | Subdomain enumeration | Auto |
+| `-d, --domain DOMAIN` | Target domain e.g. `example.com` | Auto |
+| `-l, --list FILE` | Pre-crawled URL list file | List |
+| `-b, --burp FILE` | Burp Suite XML export file | Burp |
+| `--deep` | Enable Wayback, GAU, waybackurls — also enables `--ssti` and `--ci` | Auto |
+| `--subs` | Enumerate subdomains from 12+ sources | Auto |
+| `--ssti` | Enable SSTI scanning | All |
+| `--ci` | Enable command injection scanning | All |
+| `--ci-server DOMAIN` | Interactsh OOB server for blind CI detection | All |
 | `--no-xss` | Skip XSS scanning | All |
-| `--no-redirect` | Skip redirect scanning | All |
-| `--no-info` | Skip info disclosure scanning | All |
-| `-c, --cookies STR` | Cookie string e.g. `"session=abc"` | All |
-| `-H, --headers HDR` | Extra headers | All |
-| `-p, --proxy URL` | Proxy e.g. `http://127.0.0.1:8080` | All |
+| `--no-redirect` | Skip open redirect scanning | All |
+| `--no-info` | Skip information disclosure scanning | All |
+| `-c, --cookies STR` | Cookie string e.g. `"session=abc; csrf=xyz"` | All |
+| `-H, --headers HDR` | Extra headers e.g. `"Authorization: Bearer token"` | All |
+| `-p, --proxy URL` | Proxy URL e.g. `http://127.0.0.1:8080` | All |
 | `-w, --workers N` | Parallel workers (default: 5) | All |
-| `--max-js N` | Max JS files (default: 2000) | Auto |
-| `--max-pages N` | Max page URLs (default: 1000) | Auto |
-| `--version` | Show version | — |
+| `--max-js N` | Max JS files to scan (default: 2000) | Auto |
+| `--max-pages N` | Max page URLs to scan (default: 1000) | Auto |
+| `--version` | Show version and exit | — |
 
-### Cookie Flag
+### Cookie Flag Usage
 
 ```bash
-# Correct — value only, no "Cookie:" prefix
+# ✅ Correct — value only
 bash run.sh -d target.com -c "PHPSESSID=abc123"
 bash run.sh -d target.com -c "session=abc; csrf=xyz; token=123"
 
-# Wrong
+# ❌ Wrong — don't include "Cookie:" header name
 bash run.sh -d target.com -c "Cookie: PHPSESSID=abc123"
+```
+
+### Examples
+
+```bash
+# Full power
+bash run.sh -d target.com --deep --subs -w 10
+
+# Authenticated deep scan through Burp
+bash run.sh -d target.com --deep --subs \
+  -c "session=abc123" -p http://127.0.0.1:8080
+
+# SSTI + CI with OOB callback
+bash run.sh -d target.com --ssti --ci \
+  --ci-server yourtoken.oast.fun
+
+# Rescan previous results with new patterns
+bash run.sh -l target.com/crawled-urls.txt
+
+# Burp history with SSTI + CI
+bash run.sh -b burp_export.xml --ssti --ci \
+  -c "session=abc123"
+
+# Secrets only — very fast
+bash run.sh -d target.com \
+  --no-xss --no-redirect --no-info
+
+# Check version
+bash run.sh --version
 ```
 
 ---
 
-## Secret Detection — 240+ Patterns
+## Secret Detection {#secrets}
 
-### Categories
+HackLens scans JS files, HTML pages, JSON APIs, `.env` files, config endpoints, source maps, TypeScript files, and more — using 240+ regex patterns.
 
-| Category | Patterns |
-|---|---|
-| ☁️ Cloud | AWS (Access Key, Secret, Session Token, MWS), Google API/OAuth, Azure (Storage, Client Secret, SAS), GCP SA |
-| 🤖 AI | OpenAI (old+proj), Anthropic, Hugging Face |
-| 💳 Payment | Stripe (live/test/restricted/webhook), Square, Razorpay, PayPal, Braintree |
-| 🔐 Auth | JWT, Bearer, Basic Auth URLs, OAuth tokens |
-| 🐙 VCS | GitHub (4 formats), GitLab PAT, NPM |
-| 💬 Comms | Slack (bot/user/workspace/webhook), Discord, Telegram, Twilio, SendGrid, Mailgun |
-| 🗄️ Database | MongoDB/PostgreSQL/MySQL/Redis URIs, PGPASSWORD, MySQL Password/Username/Server |
-| 🔒 Crypto | AES Key/IV, Master Key, HMAC, PBKDF/scrypt, Encryption Password |
-| 👤 Credentials | Admin Password, Password in JSON/code, Engine Server |
-| 🔑 Keys | RSA, EC, DSA, PGP, OpenSSH, Generic Private Key, Certificate |
-| 🛠️ DevOps | Datadog, New Relic, CircleCI, Terraform, Databricks, Kubernetes, DigitalOcean, Vercel, Fly.io |
-| 🔏 SSO/OAuth | Auth0, Okta, OAuth Client ID/Secret, Access/Refresh/Bearer Token, Session ID |
-| 📧 Email | SMTP Password/Host, Postmark, Resend, Mailchimp, Brevo, SparkPost |
-| 🌐 SaaS | Shopify, Algolia, Mapbox, Firebase, Vault, Sentry DSN, Intercom, Pusher |
-| 🔗 Web3 | Ethereum private key, Infura, Alchemy, WalletConnect |
-| 📋 Productivity | Notion, Linear, Airtable, Jira, HubSpot, Salesforce, Webflow |
-| 🧩 CamelCase | `apiKey`, `secretKey`, `authToken`, `clientSecret`, `privateKey`, `encryptionKey`, `dbPassword`, `accessToken`, `jwtSecret`, `webhookSecret`, `signingSecret`, `cookieSecret`, `sessionSecret`, `refreshToken` |
-| 📦 JS Objects | `{"secret":"val"}`, `{"db_password":"val"}`, `{"access_token":"val"}` |
-| 🔍 Exposure | `.env` in href/src, `.git` in href/src, UUID in sensitive context |
-| 🌍 Social | Twitter Access/OAuth Token, Facebook Access Token |
+### Pattern Categories
+
+| Category | Examples |
+|----------|---------|
+| ☁️ **Cloud** | AWS Access/Secret/Session Key, Google API/OAuth Token, Azure Storage/Client/SAS, GCP Service Account |
+| 🤖 **AI / ML** | OpenAI (old + project format), Anthropic, Hugging Face |
+| 💳 **Payment** | Stripe (live/test/restricted/webhook), Square, Razorpay, PayPal, Braintree |
+| 🔐 **Auth** | JWT tokens, Bearer tokens, OAuth (access/refresh/bearer), Session ID, Basic Auth URLs |
+| 🐙 **Source Control** | GitHub (classic PAT, OAuth, App, Fine-Grained), GitLab PAT, NPM token |
+| 💬 **Communication** | Slack (bot/user/workspace/webhook), Discord, Telegram bot, Twilio, SendGrid, Mailgun |
+| 🗄️ **Database** | MongoDB/PostgreSQL/MySQL/Redis URIs with credentials, PGPASSWORD, MySQL password/username/server/host |
+| 🔒 **Cryptography** | AES Key, Master Key, HMAC secret, PBKDF/scrypt, Encryption Password |
+| 👤 **Credentials** | Admin Password, Engine Server, hardcoded username/password pairs |
+| 🔑 **Private Keys** | RSA, EC, DSA, PGP, OpenSSH, Generic Private Key, Certificate |
+| 🛠️ **DevOps / CI-CD** | Datadog, New Relic, Databricks, Kubernetes, Terraform, CircleCI, Vercel, Fly.io, Netlify |
+| 🔏 **SSO / Auth** | Auth0, Okta, OAuth Client ID/Secret, Master Key |
+| 📧 **Email** | SMTP credentials, Postmark, Resend, Mailchimp, Brevo, SparkPost |
+| 🌐 **SaaS** | Shopify, Algolia, Mapbox, Firebase, Vault, Sentry DSN, Intercom, Pusher |
+| 🔗 **Web3** | Ethereum private key, Infura, Alchemy, WalletConnect, Pinata |
+| 📋 **Productivity** | Notion, Linear, Airtable PAT, Jira, HubSpot, Salesforce, Webflow |
+| 🧩 **CamelCase** | `apiKey`, `secretKey`, `authToken`, `clientSecret`, `dbPassword`, `jwtSecret` and 8 more |
+| 📦 **JS Objects** | `{"secret":"val"}`, `{"db_password":"val"}`, `{"access_token":"val"}` |
+| 🔍 **File Exposure** | `.env` in href/src, `.git` in href/src, UUID in sensitive key context |
+
+### Proactive Endpoint Checks
+
+Even if not crawled, HackLens fetches these paths directly:
+
+```
+/.env  /.env.local  /.env.production  /.env.staging  /.env.backup
+/.git/config  /.git/HEAD
+/config.json  /config.yml  /settings.json  /application.properties
+/package.json  /composer.json
+/actuator/env  /actuator/configprops
+/api/config  /phpinfo.php  /wp-config.php.bak
+```
+
+### Severity Levels
+
+| Level | Examples |
+|-------|---------|
+| 🔴 CRITICAL | AWS Access/Secret Key, private keys, Stripe live, OpenAI, DB URIs with creds, JWT, OAuth Client Secret, SQL dump |
+| 🟠 HIGH | Google API, Slack tokens, GitHub, SendGrid, S3 bucket, Access Token, SMTP Password |
+| 🟡 MEDIUM | Webhooks, Firebase, Session ID, Shopify, CamelCase tokens, JS Object secrets |
+| 🔵 LOW | MySQL server/host, Internal IPs, SMTP host, X-Powered-By header |
+| ℹ️ INFO | Stripe test keys, AWS ARNs |
 
 ---
 
-## XSS Detection — 3-Phase, 26 Payloads, 8 Contexts
+## XSS Detection {#xss}
 
-### Phase 1 — Canary Reflection
-Injects unique alphanumeric canary. Skips if HTML-encoded or not reflected.
+### How It Works
 
-### Phase 2 — Context Detection
-Detects where reflection lands. Skips Next.js `__NEXT_DATA__`, Nuxt, Redux JSON blocks.
+**Phase 1 — Canary Reflection**
+A unique random canary (e.g. `SHXSSk3m9pzxq1r4`) with no HTML/JS meaning is injected. Only proceeds if the canary appears verbatim and unencoded in the response.
+
+**Phase 2 — Context Detection**
+Determines exactly where the reflection landed using 500-char lookback. Automatically skips Next.js `__NEXT_DATA__`, Nuxt `__NUXT_DATA__`, Redux, and other JSON data blocks that look like JS but aren't executable.
 
 | Context | Where |
 |---------|-------|
@@ -248,143 +387,211 @@ Detects where reflection lands. Skips Next.js `__NEXT_DATA__`, Nuxt, Redux JSON 
 | `js_code` | Bare inside `<script>` |
 | `url_param` | Inside `href`/`src`/`action` |
 
-### Phase 3 — Multi-Payload Per Context
+**Phase 3 — Context-Specific Payloads**
+Multiple payloads tried per context — stops on first confirmed. FP checks applied per context type.
 
-| Context | Payloads (tries in order) |
-|---------|--------------------------|
-| `html_body` | `<img onerror>`, `><script>`, `<svg onload>`, `<details ontoggle>`, `<input onfocus>` |
-| `attr_double` | `"><script>`, `"><img onerror>`, `" onfocus autofocus`, `" onmouseover` |
-| `attr_single` | `'><script>`, `'><img onerror>`, `' onfocus autofocus`, `' onmouseover` |
+Every finding includes a **ready-to-use PoC URL**.
+
+### All 26 Payloads
+
+| Context | Payloads |
+|---------|---------|
+| `html_body` | `<img onerror>`, `><script>alert(1)//`, `<svg onload>`, `<details ontoggle>`, `<input onfocus>` |
+| `attr_double` | `"><script>`, `"><img>`, `" onfocus autofocus`, `" onmouseover` |
+| `attr_single` | `'><script>`, `'><img>`, `' onfocus autofocus`, `' onmouseover` |
 | `attr_unquoted` | `><img onerror><x`, `><script></script><x` |
 | `js_string_dq` | `";alert(1)//`, `"-alert(1)-"`, `"+alert(1)+"` |
 | `js_string_sq` | `';alert(1)//`, `'-alert(1)-'`, `'+alert(1)+'` |
 | `js_code` | `;/*canary*/alert(1)//`, `;alert(1)//`, `\nalert(1)//` |
 | `url_param` | `javascript:alert(1)//`, `javascript://canary/%0aalert(1)` |
 
-Every confirmed finding includes a **ready-to-use PoC URL**.
-
 ---
 
-## Open Redirect — 3-Layer, 13 Bypass Probes
+## Open Redirect Detection {#redirect}
 
 **Canary domain:** `evil.com`
 
-**Key rule:** `evil.com` must be the **destination host** — not just a query param value.
+**Core rule:** `evil.com` must be the **destination host** of the redirect — not just a value in a query parameter.
 
 ```
-❌ FP: Location: https://target.com/login?next=https://evil.com
-✅ REAL: Location: https://evil.com/malicious
+❌ False Positive:  Location: https://target.com/login?next=https://evil.com
+✅ True Positive:   Location: https://evil.com/page
 ```
+
+### Detection Layers
 
 | Layer | Method |
 |-------|--------|
-| 1 | Raw `Location` header (`allow_redirects=False`) |
-| 2 | JS redirect sinks in body (`window.location`, `location.href`, meta-refresh) |
-| 3 | Full redirect chain follow |
+| 1 | Raw `Location` header (`allow_redirects=False`) — highest confidence |
+| 2 | JS redirect sinks in response body (`window.location`, `location.href`, `meta-refresh`) |
+| 3 | Follow full redirect chain — check every hop |
 
-**Severities:**
-- `[CONFIRMED]` — browser actually redirected to evil.com
-- `[POSSIBLE]` — JS assignment or meta-refresh found
-- `[One-Click LOW]` — `<a href>` pointing to evil.com
+### 13 Bypass Probes
+
+Protocol-relative (`//evil.com`), `@` confusion, multiple slashes, tab prefix, credential confusion, reversed credential confusion, fragment confusion, URL-encoded variants, and more.
+
+### Severity
+
+| Finding | Severity |
+|---------|---------|
+| `[CONFIRMED]` — browser redirected to evil.com | HIGH |
+| `[POSSIBLE]` — JS sink or meta-refresh found | MEDIUM |
+| `[One-Click LOW]` — `<a href>` pointing to evil.com | LOW |
 
 ---
 
-## Information Disclosure — 70+ Probes
+## Information Disclosure {#infodisclosure}
 
-Probes known-sensitive paths and checks responses for disclosure patterns.
+HackLens probes 70+ known-sensitive paths and checks responses for 20+ disclosure patterns.
 
-**Probe paths include:**
-- Spring Boot Actuator (`/actuator/env`, `/actuator/heapdump`, 10+ endpoints)
-- Laravel (`/_ignition`, `/telescope`, `/horizon`)
-- PHP (`/phpinfo.php`, `/info.php`)
-- Config files (`/.env`, `/config.json`, `/config.yml`, `/web.config`, `/application.properties`)
-- Git/SVN (`/.git/HEAD`, `/.git/config`, `/.svn/entries`)
-- API Docs (`/swagger-ui`, `/api-docs`, `/openapi.json`, `/graphql`, `/graphiql`)
-- Backup files (`/backup.sql`, `/db.sql`, `/backup.zip`)
-- Admin panels (`/admin`, `/wp-admin`, `/administrator`, `/cpanel`)
-- Log files (`/error.log`, `/access.log`, `/debug.log`)
+### What It Probes
 
-**Response patterns detect:**
-- Python/PHP/Rails/Django/Laravel/Node.js stack traces
-- `DEBUG=True` pages
-- Server/framework version disclosure
-- Private keys in response
-- Hardcoded credentials in response
-- Environment variables exposed
-- Directory listing enabled
-- Git repository accessible
-- SQL error messages
-- phpinfo() output
-- GraphQL introspection enabled
-- Spring Boot Actuator data
-- SQL dump accessible
+- **Spring Boot Actuator** — `/actuator/env`, `/actuator/heapdump`, `/actuator/beans`, and 10 more
+- **Laravel** — `/_ignition/health-check`, `/telescope`, `/horizon`
+- **PHP** — `/phpinfo.php`, `/info.php`
+- **Config files** — `/.env` (9 variants), `/config.json`, `/config.yml`, `/web.config`, `/application.properties`
+- **Source exposure** — `/.git/HEAD`, `/.git/config`, `/.svn/entries`
+- **API Documentation** — `/swagger-ui`, `/api-docs`, `/v2/api-docs`, `/openapi.json`, `/graphql`, `/graphiql`
+- **Backup files** — `/backup.sql`, `/db.sql`, `/backup.zip`, `/www.zip`
+- **Admin panels** — `/admin`, `/wp-admin`, `/administrator`, `/cpanel`
+- **Log files** — `/error.log`, `/access.log`, `/debug.log`
+
+### What It Detects in Responses
+
+Python/PHP/Rails/Django/Laravel/Node.js stack traces, `DEBUG=True` pages, server/framework version disclosure, private keys in response, hardcoded credentials, environment variables, directory listing, Git HEAD accessible, SQL error messages, phpinfo() output, GraphQL introspection enabled, Spring Boot Actuator data, SQL dump files.
+
+### Deduplication
+
+Header findings (`X-Powered-By`, `Server` version) are deduplicated per domain — reported once regardless of how many URLs have the header.
 
 Use `--no-info` to skip.
 
 ---
 
-## Subdomain Enumeration — 10+ Sources
+## SSTI Detection {#ssti}
 
-| Source | Type |
-|--------|------|
-| crt.sh | Certificate Transparency (API) |
-| HackerTarget | Passive DNS (API) |
-| RapidDNS | DNS search (API) |
-| AlienVault OTX | Threat intelligence (API) |
-| URLScan.io | Scan history (API) |
-| ThreatCrowd | Threat intelligence (API) |
-| DNSDumpster | DNS recon (scrape) |
-| Subfinder | Tool |
-| Assetfinder | Tool |
-| Amass | Tool |
-| Chaos | Tool (needs API key) |
-| MassDNS | DNS bruteforce (optional) |
-| httpx | Alive check |
+### Triple Math Verification
+
+Every parameter on every URL is tested with three independent math expressions — all three must produce correct results before a finding is reported.
+
+```
+Round 1: {{456*765}} → response must contain 348840
+Round 2: {{89*45}}   → response must contain 4005
+Round 3: {{317*213}} → response must contain 67521
+```
+
+Three correct math evaluations cannot be coincidence — zero false positives.
+
+### 6 Engine Formats Tested
+
+| Template Syntax | Engine |
+|-----------------|--------|
+| `{{N*M}}` | Jinja2, Twig, Tornado |
+| `${N*M}` | Freemarker, Velocity |
+| `*{N*M}` | Spring EL, Thymeleaf |
+| `<%=N*M%>` | ERB, Mako |
+| `{math equation="N*M"}` | Smarty |
+
+### Engine Fingerprinting
+
+Once injection is confirmed: `{{7*'7'}}` — returns `7777777` = Jinja2, returns `49` = Twig.
+
+Enable with `--ssti` or automatically via `--deep`.
 
 ---
 
-## Output Files
+## Command Injection {#ci}
 
-### `-d` mode
+### 3 Detection Methods
+
+**Method 1 — Output-based (fastest)**
+Injects 12 separators × 16 commands, checks for output in response:
+- Unix: `id`, `whoami`, `cat /etc/passwd`, `uname -a`, `ls -la`, `env`, `printenv`
+- Windows: `whoami`, `dir`, `ver`, `ipconfig`, `type C:\Windows\win.ini`
+- Canary: `echo hacklens_ci_confirmed`
+
+**Method 2 — Time-based blind (double-verified)**
+- Round 1: `{sep}sleep 5` — response must take 5+ seconds
+- Round 2: `{sep}sleep 3` — response must also take 3+ seconds
+- Both rounds must confirm — eliminates network jitter false positives
+
+**Method 3 — OOB via interactsh (optional)**
+```bash
+bash run.sh -d target.com --ci --ci-server yourtoken.oast.fun
+```
+Injects DNS/HTTP callback payloads: `; nslookup token.yourserver`, `; curl http://token.yourserver`
+
+### 12 Injection Separators
+
+`;` `|` `&&` `||` `\n` `\r\n` `$(cmd)` `` `cmd` `` `%0a` `%0a%0d` `&` `\x0a`
+
+Also tries: `sleep${IFS}5` (bypass space filter), `ping -c 5 127.0.0.1`, `timeout 5` (Windows), `Start-Sleep 5` (PowerShell)
+
+Enable with `--ci` or automatically via `--deep`. Workers capped at 3 for CI to prevent timing FPs.
+
+---
+
+## Subdomain Enumeration {#subdomains}
+
+### Sources
+
+**No install required (HTTP API calls):**
+
+| Source | Notes |
+|--------|-------|
+| crt.sh | Certificate Transparency — 2 queries |
+| HackerTarget | Passive DNS |
+| RapidDNS | DNS search |
+| AlienVault OTX | passive_dns + url_list endpoints |
+| URLScan.io | Up to 300 results |
+| ThreatCrowd | Threat intelligence |
+| Certspotter | Reliable CT log API |
+| Wayback CDX | Archived URLs → extract subdomains |
+| DNSDumpster | DNS recon (scraped) |
+
+**Tool-based (installed by install.sh):**
+
+| Tool | Timeout | Notes |
+|------|---------|-------|
+| Subfinder | 180s | `-all` flag — uses all sources |
+| Assetfinder | 60s | Fast |
+| Amass | 300s | Passive, thorough |
+| Chaos | 60s | Needs `export CHAOS_KEY=yourkey` |
+| MassDNS | 120s | Optional bruteforce with SecLists |
+| httpx | 180s | Alive check — filters dead subdomains |
+
+**SecurityTrails (optional):**
+```bash
+export SECURITYTRAILS_KEY=yourkey
+bash run.sh -d target.com --subs
+```
+
+---
+
+## Output Files {#output}
+
+### Mode 1 (`-d`)
 ```
 target.com/
+  secrets_20260501_143022.json      ← all findings (machine-readable)
+  report_20260501_143022.html       ← visual report (open in browser)
+  total_subdomains.txt              ← all discovered subdomains
+  alive_subdomains.txt              ← live subdomains only
+  crawled-urls.txt                  ← in-scope URLs
+  crawled-urls-outofscope.txt       ← out-of-scope (reference)
+  endpoints.txt                     ← API endpoints from JS
+```
+
+### Mode 2 (`-l`) and Mode 3 (`-b`)
+```
+target-urlscan/    (or target-burpscan/)
   secrets_TIMESTAMP.json
   report_TIMESTAMP.html
-  total_subdomains.txt
-  alive_subdomains.txt
-  crawled-urls.txt
-  crawled-urls-outofscope.txt
-  endpoints.txt
 ```
 
-### `-l` mode
-```
-target-urlscan/
-  secrets_TIMESTAMP.json
-  report_TIMESTAMP.html
-```
+### HTML Report
 
----
-
-## Severity Levels
-
-| | Level | Examples |
-|---|---|---|
-| 🔴 | CRITICAL | AWS keys, private keys, Stripe live, OpenAI, DB URIs with creds, JWT, OAuth Client Secret |
-| 🟠 | HIGH | Google API, Slack tokens, SendGrid, S3, GitHub, Refresh Token, SMTP Password |
-| 🟡 | MEDIUM | Webhooks, Firebase, Shopify, Session ID, CamelCase tokens, JS Object secrets |
-| 🔵 | LOW | MySQL Server, Internal IPs, Azure Client ID, Google Client ID, Certificate |
-| ℹ️ | INFO | Stripe test keys |
-
----
-
-## Roadmap
-
-- [ ] Advanced XSS (DOM-based, blind XSS)
-- [ ] SSRF detection
-- [ ] WAF evasion
-- [ ] Command injection
-- [ ] SQL injection
+The HTML report opens in any browser and shows all findings organized by type with severity colors, full evidence, and PoC URLs for XSS/redirect findings.
 
 ---
 
@@ -392,44 +599,47 @@ target-urlscan/
 
 ```
 HackLens/
-  hacklens.py         ← main scanner (2900+ lines)
+  hacklens.py         ← main scanner (~3900 lines)
   install.sh          ← one-command installer
   update.sh           ← one-command updater
   run.sh              ← launcher (auto-created by install.sh)
   requirements.txt    ← Python dependencies
-  README.md
-  TECHNICAL_DOCS.md
+  README.md           ← this file
+  TECHNICAL_DOCS.md   ← full technical documentation
   .gitignore
   logo.png
 ```
 
 ---
 
-## Updating
+## Roadmap {#roadmap}
 
-```bash
-cd HackLens
-bash update.sh
-source ~/.bashrc
-```
+- [ ] Advanced XSS (DOM-based, blind XSS)
+- [ ] SSRF detection
+- [ ] WAF evasion
+- [ ] SQL injection
 
-Or manually:
+---
 
-```bash
-git pull origin main
-bash install.sh
-source ~/.bashrc
-```
+## Contributing
+
+Pull requests welcome. When adding secret patterns:
+- Test against known FP sources (d3.js, three.js, SVG files)
+- Use labeled context `"key_name": "value"` for generic patterns
+- Add minimum length requirements
+- Verify with runtime test cases
 
 ---
 
 ## License
 
-MIT — free to use, modify, distribute with attribution.
+MIT License — free to use, modify, and distribute with attribution.
 
 ---
 
 <p align="center">
-  <b>Yogesh Bhandage</b> | <a href="https://yogeshbhandage.com">yogeshbhandage.com</a><br/>
-  <i>Built with AI using original ideas by the author. Hunt responsibly. 🎯</i>
+  <b>Created by Yogesh Bhandage</b><br/>
+  <a href="https://yogeshbhandage.com">yogeshbhandage.com</a><br/><br/>
+  <i>Built with AI using original ideas by the author.</i><br/>
+  <i>Hunt responsibly. 🎯</i>
 </p>
