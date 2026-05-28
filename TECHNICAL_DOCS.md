@@ -144,7 +144,7 @@ Phase 3: Multi-Payload (tries each, stops on first confirmed)
 **Canary:** `evil.com` — must be destination HOST, not a query param value.
 
 ```
-❌ FP: Location: https://gcore.com/login?return=https://evil.com
+❌ FP: Location: https://target.com/login?return=https://evil.com
 ✅ REAL: Location: https://evil.com/page
 ```
 
