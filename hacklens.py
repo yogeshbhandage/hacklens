@@ -501,11 +501,31 @@ class Logger:
                                   "value":value,"source":source,"line":line})
 
     def info_disclosure(self, itype, url, detail, evidence=""):
-        key = f"id:{url}:{itype}"
+        parsed = urllib.parse.urlparse(url)
+        domain = parsed.netloc
+
+        # Header-based findings (X-Powered-By, Server version, Debug headers)
+        # deduplicate by domain + type — same header on 100 URLs = 1 finding
+        HEADER_FINDINGS = {
+            "X-Powered-By Header",
+            "Web Server Version Disclosure",
+            "Server Header Version",
+            "Debug Header Present",
+            "X-Powered-By",
+        }
+
+        # For header findings: one report per domain per type
+        if any(hf in itype for hf in HEADER_FINDINGS):
+            key = f"id:{domain}:{itype}"
+        else:
+            # For path/response findings: one report per URL per type
+            key = f"id:{domain}{parsed.path}:{itype}"
+
         with self.lock:
             if key in self._seen:
                 return
             self._seen.add(key)
+
         print(f"  {Y}{BOLD}[Info Disclosure]{RESET} {BOLD}{itype}{RESET}")
         print(f"  {DIM}URL     :{RESET} {url}")
         print(f"  {DIM}Detail  :{RESET} {detail}")
@@ -2168,109 +2188,214 @@ def collect_subdomains(domain, log, session, out_dir=None):
 
     # ── Passive API Sources ───────────────────────────────────────────────
 
-    # 1. crt.sh — certificate transparency logs
-    try:
-        r = session.get(f"https://crt.sh/?q=%.{domain}&output=json", timeout=20)
-        if r.status_code == 200:
-            for entry in r.json():
-                for n in entry.get("name_value", "").split("\n"):
-                    n = n.strip().lstrip("*.")
-                    if domain in n and n:
-                        subs.add(n)
-            log.success(f"crt.sh: {len(subs)} subdomains")
-    except Exception as e:
-        log.warn(f"crt.sh: {e}")
+    # 1. crt.sh — certificate transparency (two queries for max coverage)
+    for crt_query in [f"%.{domain}", domain]:
+        try:
+            r = session.get(
+                f"https://crt.sh/?q={crt_query}&output=json",
+                timeout=30, headers={"Accept": "application/json"}
+            )
+            if r.status_code == 200:
+                before = len(subs)
+                try:
+                    for entry in r.json():
+                        for n in entry.get("name_value", "").split("\n"):
+                            n = n.strip().lstrip("*.")
+                            if domain in n and n:
+                                subs.add(n)
+                    if len(subs) - before > 0:
+                        log.success(f"crt.sh ({crt_query}): {len(subs)-before} subdomains")
+                except Exception as je:
+                    log.warn(f"crt.sh JSON parse: {je}")
+            else:
+                log.warn(f"crt.sh: HTTP {r.status_code}")
+        except Exception as e:
+            log.warn(f"crt.sh: {e}")
 
-    # 2. HackerTarget — fast passive DNS
+    # 2. HackerTarget
     try:
-        r = session.get(f"https://api.hackertarget.com/hostsearch/?q={domain}", timeout=15)
-        if r.status_code == 200 and "error" not in r.text.lower()[:50]:
-            before = len(subs)
-            for line in r.text.splitlines():
-                if "," in line:
-                    sub = line.split(",")[0].strip()
-                    if domain in sub:
-                        subs.add(sub)
-            log.success(f"HackerTarget: {len(subs)-before} subdomains")
-    except Exception:
-        pass
+        r = session.get(
+            f"https://api.hackertarget.com/hostsearch/?q={domain}", timeout=15
+        )
+        if r.status_code == 200:
+            if "API count exceeded" in r.text or "error" in r.text.lower()[:30]:
+                log.warn("HackerTarget: API limit reached")
+            else:
+                before = len(subs)
+                for line in r.text.splitlines():
+                    if "," in line:
+                        sub = line.split(",")[0].strip()
+                        if domain in sub:
+                            subs.add(sub)
+                log.success(f"HackerTarget: {len(subs)-before} subdomains")
+        else:
+            log.warn(f"HackerTarget: HTTP {r.status_code}")
+    except Exception as e:
+        log.warn(f"HackerTarget: {e}")
 
     # 3. RapidDNS
     try:
-        r = session.get(f"https://rapiddns.io/subdomain/{domain}?full=1#result", timeout=15)
+        r = session.get(
+            f"https://rapiddns.io/subdomain/{domain}?full=1#result", timeout=15
+        )
         if r.status_code == 200:
             before = len(subs)
-            for m in re.finditer(rf'([a-zA-Z0-9][a-zA-Z0-9\-\.]*\.{re.escape(domain)})', r.text):
+            for m in re.finditer(
+                rf'([a-zA-Z0-9][a-zA-Z0-9\-\.]*\.{re.escape(domain)})', r.text
+            ):
                 subs.add(m.group(1).lower())
             log.success(f"RapidDNS: {len(subs)-before} subdomains")
-    except Exception:
-        pass
+        else:
+            log.warn(f"RapidDNS: HTTP {r.status_code}")
+    except Exception as e:
+        log.warn(f"RapidDNS: {e}")
 
-    # 4. AlienVault OTX
+    # 4. AlienVault OTX — query both passive_dns AND url_list
+    for otx_endpoint in ["passive_dns", "url_list"]:
+        try:
+            r = session.get(
+                f"https://otx.alienvault.com/api/v1/indicators/domain/{domain}/{otx_endpoint}",
+                timeout=20
+            )
+            if r.status_code == 200:
+                before = len(subs)
+                data = r.json()
+                for entry in data.get("passive_dns", data.get("url_list", [])):
+                    host = entry.get("hostname", entry.get("domain", ""))
+                    if not host:
+                        # url_list has 'url' field
+                        url_val = entry.get("url", "")
+                        if url_val:
+                            try:
+                                host = urllib.parse.urlparse(url_val).netloc
+                            except Exception:
+                                pass
+                    if host and domain in host:
+                        subs.add(host.strip().lstrip("*.").split(":")[0])
+                if len(subs) - before > 0:
+                    log.success(f"AlienVault OTX ({otx_endpoint}): {len(subs)-before} subdomains")
+            else:
+                log.warn(f"AlienVault OTX ({otx_endpoint}): HTTP {r.status_code}")
+        except Exception as e:
+            log.warn(f"AlienVault OTX ({otx_endpoint}): {e}")
+
+    # 5. URLScan.io — query multiple pages for better coverage
     try:
-        r = session.get(
-            f"https://otx.alienvault.com/api/v1/indicators/domain/{domain}/passive_dns",
-            timeout=15
-        )
-        if r.status_code == 200:
-            before = len(subs)
-            for entry in r.json().get("passive_dns", []):
-                host = entry.get("hostname", "")
-                if domain in host:
-                    subs.add(host.strip().lstrip("*."))
-            log.success(f"AlienVault OTX: {len(subs)-before} subdomains")
-    except Exception:
-        pass
+        before = len(subs)
+        for page in range(1, 4):  # up to 300 results
+            r = session.get(
+                f"https://urlscan.io/api/v1/search/?q=domain:{domain}&size=100",
+                timeout=15
+            )
+            if r.status_code == 200:
+                results = r.json().get("results", [])
+                if not results:
+                    break
+                for result in results:
+                    for field in ["domain", "apex_domain"]:
+                        pd = result.get("page", {}).get(field, "")
+                        if pd and domain in pd:
+                            subs.add(pd)
+                    # also check the URL itself
+                    url_val = result.get("page", {}).get("url", "")
+                    if url_val:
+                        try:
+                            h = urllib.parse.urlparse(url_val).netloc.split(":")[0]
+                            if domain in h:
+                                subs.add(h)
+                        except Exception:
+                            pass
+            else:
+                log.warn(f"URLScan.io: HTTP {r.status_code}")
+                break
+        log.success(f"URLScan.io: {len(subs)-before} subdomains")
+    except Exception as e:
+        log.warn(f"URLScan.io: {e}")
 
-    # 5. URLScan.io
-    try:
-        r = session.get(
-            f"https://urlscan.io/api/v1/search/?q=domain:{domain}&size=100",
-            timeout=15
-        )
-        if r.status_code == 200:
-            before = len(subs)
-            for result in r.json().get("results", []):
-                page_domain = result.get("page", {}).get("domain", "")
-                if domain in page_domain:
-                    subs.add(page_domain)
-            log.success(f"URLScan.io: {len(subs)-before} subdomains")
-    except Exception:
-        pass
-
-    # 6. ThreatCrowd
+    # 6. ThreatCrowd (unreliable but free — try anyway)
     try:
         r = session.get(
             f"https://www.threatcrowd.org/searchApi/v2/domain/report/?domain={domain}",
-            timeout=15
+            timeout=10
         )
         if r.status_code == 200:
             before = len(subs)
             for sub in r.json().get("subdomains", []):
                 if domain in sub:
                     subs.add(sub.strip())
-            log.success(f"ThreatCrowd: {len(subs)-before} subdomains")
-    except Exception:
-        pass
+            if len(subs) - before > 0:
+                log.success(f"ThreatCrowd: {len(subs)-before} subdomains")
+        else:
+            log.warn(f"ThreatCrowd: HTTP {r.status_code}")
+    except Exception as e:
+        log.warn(f"ThreatCrowd: {e}")
 
-    # 7. SecurityTrails (no key needed for basic)
+    # 7. Certspotter — reliable free certificate transparency API
     try:
         r = session.get(
-            f"https://api.securitytrails.com/v1/domain/{domain}/subdomains",
-            headers={"apikey": ""},
-            timeout=15
+            f"https://api.certspotter.com/v1/issuances?domain={domain}&include_subdomains=true&expand=dns_names",
+            timeout=20
         )
         if r.status_code == 200:
             before = len(subs)
-            for sub in r.json().get("subdomains", []):
-                subs.add(f"{sub}.{domain}")
-            log.success(f"SecurityTrails: {len(subs)-before} subdomains")
-    except Exception:
-        pass
+            for entry in r.json():
+                for name in entry.get("dns_names", []):
+                    name = name.strip().lstrip("*.")
+                    if domain in name:
+                        subs.add(name)
+            log.success(f"Certspotter: {len(subs)-before} subdomains")
+        else:
+            log.warn(f"Certspotter: HTTP {r.status_code}")
+    except Exception as e:
+        log.warn(f"Certspotter: {e}")
 
-    # 8. DNS Dumpster (scrape)
+    # 8. Wayback Machine CDX — subdomains from archived URLs
+    try:
+        r = session.get(
+            f"https://web.archive.org/cdx/search/cdx?url=*.{domain}/*"
+            f"&output=text&fl=original&collapse=urlkey&limit=5000",
+            timeout=30
+        )
+        if r.status_code == 200 and r.text.strip():
+            before = len(subs)
+            for line in r.text.splitlines():
+                try:
+                    h = urllib.parse.urlparse(line.strip()).netloc.split(":")[0]
+                    if h and domain in h:
+                        subs.add(h)
+                except Exception:
+                    pass
+            log.success(f"Wayback Machine: {len(subs)-before} subdomains")
+        else:
+            log.warn(f"Wayback Machine: HTTP {r.status_code}")
+    except Exception as e:
+        log.warn(f"Wayback Machine: {e}")
+
+    # 9. SecurityTrails — only if API key provided
+    st_key = os.environ.get("SECURITYTRAILS_KEY", "")
+    if st_key:
+        try:
+            r = session.get(
+                f"https://api.securitytrails.com/v1/domain/{domain}/subdomains",
+                headers={"apikey": st_key},
+                timeout=15
+            )
+            if r.status_code == 200:
+                before = len(subs)
+                for sub in r.json().get("subdomains", []):
+                    subs.add(f"{sub}.{domain}")
+                log.success(f"SecurityTrails: {len(subs)-before} subdomains")
+            else:
+                log.warn(f"SecurityTrails: HTTP {r.status_code}")
+        except Exception as e:
+            log.warn(f"SecurityTrails: {e}")
+    else:
+        log.info("SecurityTrails: skipped (set SECURITYTRAILS_KEY=yourkey to enable)")
+
+    # 10. DNS Dumpster (scrape — fragile but sometimes useful)
     try:
         s2 = requests.Session()
+        s2.headers.update({"User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36"})
         r1 = s2.get("https://dnsdumpster.com", timeout=10)
         csrf = re.search(r'csrfmiddlewaretoken.*?value=["\'](\w+)["\']', r1.text)
         if csrf:
@@ -2282,11 +2407,15 @@ def collect_subdomains(domain, log, session, out_dir=None):
                 timeout=15
             )
             before = len(subs)
-            for m in re.finditer(rf'([a-zA-Z0-9][a-zA-Z0-9\-\.]*\.{re.escape(domain)})', r2.text):
+            for m in re.finditer(
+                rf'([a-zA-Z0-9][a-zA-Z0-9\-\.]*\.{re.escape(domain)})', r2.text
+            ):
                 subs.add(m.group(1).lower())
             log.success(f"DNSDumpster: {len(subs)-before} subdomains")
-    except Exception:
-        pass
+        else:
+            log.warn("DNSDumpster: CSRF token not found (blocked or changed)")
+    except Exception as e:
+        log.warn(f"DNSDumpster: {e}")
 
     # ── Tool-Based Sources ────────────────────────────────────────────────
 
@@ -2365,16 +2494,31 @@ def collect_subdomains(domain, log, session, out_dir=None):
             )
             os.unlink(tf_path)
             if proc.stdout.strip():
-                alive_lines = [l.strip() for l in proc.stdout.splitlines() if l.strip()]
-                # Extract just hostnames from httpx output (strips https://)
                 alive_hosts = set()
-                for line in alive_lines:
-                    host = line.replace("https://","").replace("http://","").rstrip("/")
-                    alive_hosts.add(host)
-                alive_subs = [s for s in subs if s in alive_hosts]
-                log.success(f"Alive subdomains: {len(alive_subs)}/{len(subs)}")
+                for line in proc.stdout.splitlines():
+                    if line.strip():
+                        # httpx returns full URLs like https://sub.domain.com
+                        # strip scheme and trailing slash to get hostname
+                        host = line.strip().lower()
+                        host = host.replace("https://","").replace("http://","").rstrip("/")
+                        # also strip port if present
+                        host = host.split(":")[0]
+                        alive_hosts.add(host)
+                # Match against our subs list (both are plain hostnames)
+                alive_subs = [s for s in subs if s.lower() in alive_hosts]
+                if not alive_subs:
+                    # Fallback: httpx may have returned different format
+                    # use all subs if alive check returned nothing useful
+                    alive_subs = list(subs)
+                    log.warn(f"httpx alive check returned {len(alive_hosts)} hosts but none matched — using all {len(subs)} subdomains")
+                else:
+                    log.success(f"Alive subdomains: {len(alive_subs)}/{len(subs)}")
+            else:
+                log.warn("httpx returned no output — using all subdomains")
+                alive_subs = list(subs)
         except Exception as e:
             log.warn(f"httpx alive check failed: {e} — using all subdomains")
+            alive_subs = list(subs)
     else:
         if not shutil.which("httpx"):
             log.warn("httpx not installed — skipping alive check (install for faster scans)")
