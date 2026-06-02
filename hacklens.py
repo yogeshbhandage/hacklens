@@ -1887,7 +1887,6 @@ class InfoDisclosureScanner:
             pass
 
     def probe_paths(self, base_domain, workers=5):
-        self.log.section("STEP 6: Information Disclosure Scanning")
         tasks = []
         for scheme in ("https", "http"):
             base = f"{scheme}://{base_domain}"
@@ -1895,7 +1894,7 @@ class InfoDisclosureScanner:
                 url = base.rstrip("/") + path
                 if url not in self.tested:
                     tasks.append(url)
-        self.log.info(f"Probing {len(tasks)} known-sensitive paths on {base_domain}...")
+        self.log.info(f"Probing {len(tasks)} paths on {base_domain}...")
         with ThreadPoolExecutor(max_workers=workers) as ex:
             futs = [ex.submit(self.scan_url, u) for u in tasks]
             for fut in as_completed(futs):
@@ -2042,7 +2041,6 @@ class SSTIScanner:
         return hint
 
     def scan_urls(self, urls, workers=5):
-        self.log.section(f"STEP 7: SSTI Scanning {len(urls)} URLs")
         tasks = []
         seen_keys = set()
         for url in urls:
@@ -2060,8 +2058,9 @@ class SSTIScanner:
             self.log.warn("No parameterised URLs found for SSTI testing")
             return
 
+        self.log.section(f"STEP 7: SSTI Scanning {len(tasks)} param combinations")
         self.log.info(
-            f"Testing {len(tasks)} param combinations "
+            f"Testing {len(tasks)} combinations "
             f"({len(self.PROBE_SETS)} engine formats × 3 verification rounds each)…"
         )
         with ThreadPoolExecutor(max_workers=workers) as ex:
@@ -2295,7 +2294,6 @@ class CommandInjectionScanner:
 
     def scan_urls(self, urls, workers=3):
         """Scan all URLs — test ALL parameters, none skipped."""
-        self.log.section(f"STEP 8: Command Injection Scanning {len(urls)} URLs")
         tasks     = []
         seen_keys = set()
 
@@ -2314,12 +2312,11 @@ class CommandInjectionScanner:
             self.log.warn("No parameterised URLs found for CI testing")
             return
 
+        self.log.section(f"STEP 8: Command Injection Scanning {len(tasks)} param combinations")
         self.log.info(
-            f"Testing {len(tasks)} param combinations "
+            f"Testing {len(tasks)} combinations "
             f"({len(self.SEPARATORS)} separators, output + time-based methods)…"
         )
-        # Lower workers for time-based tests — avoids false positives from
-        # server load affecting response times
         safe_workers = min(workers, 3)
         with ThreadPoolExecutor(max_workers=safe_workers) as ex:
             futs = [ex.submit(self._test_param, u, p, param) for u, p, param in tasks]
@@ -3138,20 +3135,19 @@ def run_scan_from_list(args):
 
     # ── STEP 4: Information Disclosure ────────────────────────────────
     if not getattr(args, "no_info", False):
+        log.section("STEP 4: Information Disclosure Scanning")
         id_scanner = InfoDisclosureScanner(log, session)
         id_scanner.probe_paths(primary_domain, workers=args.workers)
         id_scanner.scan_collected_urls(
             list(set(page_param + page_noparam))[:300], workers=args.workers
         )
 
-    # ── STEP 5: SSTI (--ssti or --deep) ───────────────────────────────
-    run_ssti = getattr(args, "ssti", False) or getattr(args, "deep", False)
-    if run_ssti and page_param:
+    # ── STEP 5: SSTI (--deep auto-enables) ────────────────────────────
+    if (getattr(args, "deep", False) or getattr(args, "ssti", False)) and page_param:
         SSTIScanner(log, session).scan_urls(page_param[:500], workers=args.workers)
 
-    # ── STEP 6: Command Injection (--ci or --deep) ─────────────────────
-    run_ci = getattr(args, "ci", False) or getattr(args, "deep", False)
-    if run_ci and page_param:
+    # ── STEP 6: Command Injection (--deep auto-enables) ───────────────
+    if (getattr(args, "deep", False) or getattr(args, "ci", False)) and page_param:
         ci_server = getattr(args, "ci_server", "")
         CommandInjectionScanner(log, session, ci_server).scan_urls(
             page_param[:300], workers=min(args.workers, 3)
@@ -3431,10 +3427,35 @@ def run_scan(args):
 
     # ── 6. Information Disclosure Scanning ────────
     if not getattr(args, "no_info", False):
+        log.section("STEP 6: Information Disclosure Scanning")
         id_scanner = InfoDisclosureScanner(log, session)
         for d in scan_domains[:5]:
             id_scanner.probe_paths(d, workers=args.workers)
-        id_scanner.scan_collected_urls(list(all_pages)[:300], workers=args.workers)
+        # Only scan in-scope collected pages
+        inscope_for_id = [u for u in list(all_pages)[:300]
+                          if is_in_scope(u, domain)]
+        id_scanner.scan_collected_urls(inscope_for_id, workers=args.workers)
+
+    # ── 7. SSTI (--deep auto-enables) ──────────────
+    if getattr(args, "deep", False) or getattr(args, "ssti", False):
+        ssti_urls = [u for u in list(all_pages)
+                     if "?" in u and is_in_scope(u, domain)]
+        if ssti_urls:
+            SSTIScanner(log, session).scan_urls(
+                ssti_urls[:500], workers=args.workers)
+        else:
+            log.warn("SSTI: no parameterised in-scope URLs found")
+
+    # ── 8. Command Injection (--deep auto-enables) ──
+    if getattr(args, "deep", False) or getattr(args, "ci", False):
+        ci_urls = [u for u in list(all_pages)
+                   if "?" in u and is_in_scope(u, domain)]
+        if ci_urls:
+            ci_server = getattr(args, "ci_server", "")
+            CommandInjectionScanner(log, session, ci_server).scan_urls(
+                ci_urls[:300], workers=min(args.workers, 3))
+        else:
+            log.warn("CI: no parameterised in-scope URLs found")
 
     # ── Summary ────────────────────────────────────
     log.section("SCAN COMPLETE")
@@ -3844,6 +3865,7 @@ def run_scan_from_burp(args):
 
     # ── STEP 4: Information Disclosure ────────────────────────────────
     if not getattr(args, 'no_info', False):
+        log.section("STEP 4: Information Disclosure Scanning")
         id_scanner = InfoDisclosureScanner(log, session)
         id_scanner.probe_paths(primary_domain, workers=args.workers)
 
@@ -3921,9 +3943,10 @@ Examples:
     p.add_argument("--no-xss",      action="store_true", help="Skip XSS scanning")
     p.add_argument("--no-redirect", action="store_true", help="Skip open redirect scanning")
     p.add_argument("--no-info",     action="store_true", help="Skip information disclosure scanning")
-    p.add_argument("--ssti",        action="store_true", help="Enable SSTI scanning (auto-enabled with --deep)")
-    p.add_argument("--ci",          action="store_true", help="Enable command injection scanning (auto-enabled with --deep)")
-    p.add_argument("--ci-server",   default="",          help="Interactsh/callback server domain for OOB CI detection (optional)")
+    # --ssti and --ci are kept for explicit use but --deep enables both automatically
+    p.add_argument("--ssti",        action="store_true", help=argparse.SUPPRESS)
+    p.add_argument("--ci",          action="store_true", help=argparse.SUPPRESS)
+    p.add_argument("--ci-server",   default="",          help="Interactsh OOB server for blind command injection (optional)")
     p.add_argument("-c","--cookies", help="Cookie string")
     p.add_argument("-H","--headers", nargs="+",          help="Extra headers")
     p.add_argument("-p","--proxy",   help="Proxy URL (e.g. http://127.0.0.1:8080)")
