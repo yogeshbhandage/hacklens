@@ -1,4 +1,4 @@
-# HackLens v3.0.0 — Technical Documentation
+[# HackLens v3.0.0 — Technical Documentation
 
 **Created by Yogesh Bhandage | yogeshbhandage.com**
 *Built with AI using original ideas by the author. For authorized testing only.*
